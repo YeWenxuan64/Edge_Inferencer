@@ -48,7 +48,7 @@ class AIInferencer:
             pool_mode: 线程池推理模式 bool: True or False
             若为True, 则使用线程池进行推理, 否则使用单线程推理器
         """
-        self.model_path = model_path
+        self.model_path = str(model_path)
         if isinstance(cores, int):
             cores = tuple([cores])
         self.cores = cores
