@@ -1,5 +1,25 @@
 import os
+import sys
+from pathlib import Path
 import numpy as np
+
+
+CURRENT_DIR = Path(__file__).parent.resolve()
+
+class temporary_sys_path:
+    def __init__(self, new_path: str):
+        self.new_path = str(new_path)
+        
+    def __enter__(self):
+        sys.path.insert(0, self.new_path)
+        return self
+        
+    def __exit__(self, etype, value, traceback):
+        # 安全移除：避免原本就在 sys.path 里导致误删
+        if self.new_path in sys.path:
+            sys.path.remove(self.new_path)
+
+
 
 class EmptyAIInferencer:
     def __init__(self):
@@ -49,10 +69,11 @@ class AIInferencer:
 
         if ext == '.rknn':
             model_type = 'rknn'
-        elif ext == '.onnx':
-            model_type = 'onnx'
         elif ext == '.bin':
             model_type = 'qnn'
+        elif ext == '.onnx':
+            model_type = 'onnx'
+
 
         return model_type
     
@@ -60,22 +81,28 @@ class AIInferencer:
         self.model_type = self.identify_model_type(self.model_path)
 
         if self.model_type == 'rknn':
-            if self.pool_mode is True:
-                from .rknn_executor import RknnThreadPool
-                self.inferfacer = RknnThreadPool(self.model_path, self.cores)
+            with temporary_sys_path(CURRENT_DIR):
+                import rknn_inferencer as rknn_infer
 
+            if self.pool_mode is True:
+                self.inferfacer = rknn_infer.RknnThreadPool(self.model_path, self.cores)
             else:
-                from .rknn_executor import RknnExecutor
-                self.inferfacer = RknnExecutor(self.model_path, self.cores)
+                self.inferfacer = rknn_infer.RknnExecutor(self.model_path, self.cores)
 
         elif self.model_type == 'qnn':
-            if self.pool_mode is True:
-                from .qnn_excutor import QnnProcessPool
-                self.inferfacer = QnnProcessPool(self.model_path, self.cores)
+            with temporary_sys_path(CURRENT_DIR):
+                import qnn_inferencer as qnn_infer
 
+            if self.pool_mode is True:
+                self.inferfacer = qnn_infer.QnnProcessPool(self.model_path, self.cores)
             else:
-                from .qnn_excutor import QnnExecutor
-                self.inferfacer = QnnExecutor(self.model_path)
+                self.inferfacer = qnn_infer.QnnExecutor(self.model_path)
+
+        elif self.model_type == 'onnx':
+            with temporary_sys_path(CURRENT_DIR):
+                import onnx_inferencer as onnx_infer
+
+            self.inferfacer = onnx_infer.OnnxExecutor(self.model_path)
     
     def release(self) -> bool:
         ret = self.inferfacer.release()
