@@ -12,6 +12,7 @@ class OnnxExecutor():
 
         self.input_names = []
         self.output_names = []
+        self.float_inputs = False
 
     def set_providers(self, providers:list[str]=['CPUExecutionProvider']):
         self.providers = providers
@@ -23,6 +24,9 @@ class OnnxExecutor():
 
         self.input_names = [inp.name for inp in input_details]
         self.output_names = [out.name for out in self.session.get_outputs()]
+
+        if "float" in input_details[0].type:
+            self.float_inputs = True
         
     def put(self, input_data:list[np.ndarray], input_format:str='nhwc') -> list[np.ndarray]:
         if self.session is None:
@@ -33,8 +37,10 @@ class OnnxExecutor():
         elif input_format == 'nchw':
             pass
 
-        # 构建 feed_dict
-        input_feed = {}
+        if self.float_inputs:
+            input_data = [tensor.astype(np.float32) for tensor in input_data]
+
+        input_feed = {} # 构建 feed_dict
 
         for i, input_name in enumerate(self.input_names):
             input_feed[input_name] = input_data[i]
