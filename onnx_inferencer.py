@@ -14,6 +14,8 @@ class OnnxExecutor():
         self.output_names = []
         self.float_inputs = False
 
+        self.last_outputs:list[np.ndarray]|None = None
+
     def set_providers(self, providers:list[str]=['CPUExecutionProvider']):
         self.providers = providers
 
@@ -46,8 +48,15 @@ class OnnxExecutor():
             input_feed[input_name] = input_data[i]
             
         outputs = self.session.run(None, input_feed) # 执行推理
+        self.last_outputs = outputs
 
         return outputs
+    
+    def get(self, block:bool=True) -> list[np.ndarray]:
+        ret = self.last_outputs
+        self.last_outputs = None
+
+        return ret
 
     def release(self):
         if self.session is not None:
