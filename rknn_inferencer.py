@@ -20,6 +20,8 @@ class RknnExecutor():
             mask = rknn_lite.NPU_CORE_1
         elif self.core == 2:
             mask = rknn_lite.NPU_CORE_2
+        elif self.core == -1:
+            mask = rknn_lite.NPU_CORE_ALL
 
         rknn_lite.init_runtime(core_mask=mask)
         self.rknn_lite = rknn_lite
