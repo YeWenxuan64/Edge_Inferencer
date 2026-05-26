@@ -58,12 +58,15 @@ class AIInferencer:
         self.inferfacer_init()
 
     @staticmethod
-    def identify_model_type(model_path):
+    def identify_model_type(model_path:str|None):
         """
         根据模型文件的后缀来识别模型种类
         """
-        ext:str = os.path.splitext(model_path)[-1]
-        ext = ext.lower()  # 将后缀转换为小写，以便于比较
+        if model_path:
+            ext:str = os.path.splitext(model_path)[-1]
+            ext = ext.lower()  # 将后缀转换为小写，以便于比较
+        else:
+            ext = ''
 
         model_type = 'Unknown'
 
