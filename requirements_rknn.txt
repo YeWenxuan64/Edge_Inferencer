@@ -1,0 +1,7 @@
+# python3.10+
+
+numpy
+opencv-python
+
+# rknn
+rknn-toolkit-lite2

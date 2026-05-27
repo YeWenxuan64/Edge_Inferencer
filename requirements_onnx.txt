@@ -1,0 +1,9 @@
+# python3.10+
+
+numpy
+opencv-python
+
+
+# onnx
+onnx
+onnxruntime
