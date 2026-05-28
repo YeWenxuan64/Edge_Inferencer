@@ -242,9 +242,9 @@ class QnnProcessPool():
         try:
             shm = SharedMemory(name=shm_name)
             shm.unlink() # 取消链接，释放资源
-            print(f"Shared memory block '{shm.name}' unlinked at exit")
+            print(f"Shared memory block '{shm.name}' unlinked at process exit")
         except FileNotFoundError:
-            print(f"Shared memory block '{shm_name}' not found at exit")
+            # print(f"Shared memory block '{shm_name}' not found at exit")
             pass
 
     def init_shared_memory(self, array_list:list[np.ndarray]) -> tuple[SharedMemory, list[tuple[tuple[int,], np.dtype, tuple[int, int]]]]:
