@@ -1,4 +1,3 @@
-import os
 import sys
 from pathlib import Path
 import numpy as np
@@ -48,7 +47,9 @@ class AIInferencer:
             mult_task: 线程池推理模式 bool: True or False
             若为True, 则使用线程池进行推理, 否则使用单线程推理器
         """
+        
         self.model_path = str(model_path)
+
         if isinstance(cores, int):
             cores = tuple([cores])
         self.cores = cores
@@ -63,8 +64,10 @@ class AIInferencer:
         根据模型文件的后缀来识别模型种类
         """
         if model_path:
-            ext:str = os.path.splitext(model_path)[-1]
-            ext = ext.lower()  # 将后缀转换为小写，以便于比较
+            p = Path(model_path)
+            if not p.exists():
+                print(f"Model file not found: {model_path}")
+            ext = p.suffix.lower()
         else:
             ext = ''
 
@@ -76,7 +79,6 @@ class AIInferencer:
             model_type = 'qnn'
         elif ext == '.onnx':
             model_type = 'onnx'
-
 
         return model_type
     
@@ -97,9 +99,11 @@ class AIInferencer:
                 import qnn_inferencer as qnn_infer
 
             if self.mult_task:
+                #self.inferfacer = qnn_infer.QnnThreadPool(self.model_path, self.cores)
                 self.inferfacer = qnn_infer.QnnProcessPool(self.model_path, self.cores)
             else:
                 self.inferfacer = qnn_infer.QnnExecutor(self.model_path)
+                #self.inferfacer = qnn_infer.QnnExecutor2(self.model_path)
 
         elif self.model_type == 'onnx':
             with temporary_sys_path(CURRENT_DIR):
