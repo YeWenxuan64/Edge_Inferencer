@@ -69,14 +69,13 @@ class QnnExecutor():
     def release(self) -> bool:
         ret = False
         if self.qnn_context is not None:
-            PerfProfile.RelPerfProfileGlobal()
+            #PerfProfile.RelPerfProfileGlobal()
             del self.qnn_context
+            self.qnn_context = None
+            #gc.collect()
             
             print(f'QNN Executer {self.model_name} released')
             ret = True
-
-        self.qnn_context = None
-        gc.collect()
 
         return ret
 
@@ -98,16 +97,15 @@ class QnnThreadPool():
 
     def init_qnn(self) -> list[QNNContext]:
         QNNConfig.Config('None', Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
-        PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)
-
+    
         model_name = sanitize_name(Path(self.model_path).stem)
-
         qnn_list = []
 
         for core in self.cores:
             qnn_context = QNNContext(model_name=f'{model_name}_{core}', model_path=self.model_path, is_async=True)
             qnn_list.append(qnn_context)
 
+        PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)
         return qnn_list
 
     @staticmethod
@@ -266,21 +264,26 @@ def create_shared_memory(array_list:list[np.ndarray]) -> tuple[SharedMemory, lis
 
 
 class ProcessQnnExecutor:
-    def __init__(self, child_conn:Connection, model_path:str, in_shm_name:str, input_args_list:list):
+    """Pipe 版子进程执行器：用 child_conn 收信号，child_conn 返结果
+
+    manager_dict: multiprocessing.Manager().dict() 代理 —— 子进程可读写
+    - 读取：查找已注册的 out_shm 名称及 output_args_list
+    - 写入：首次创建 out_shm 时直接注册到 manager_dict（无需经主进程中转）
+    """
+    def __init__(self, child_conn:Connection, model_path:str, in_shm_name:str, input_args_list:list, manager_dict):
         self.child_conn = child_conn
         self.model_path = model_path
-        self.in_shm_name = in_shm_name
-        self.input_args_list = input_args_list
+
+        self.manager_dict:DictProxy = manager_dict
         self.output_args_list:list|None = None
 
         self.pid = os.getpid()
-        if hasattr(os, 'sched_setaffinity'):
-            try:
-                thread_id = threading.get_native_id()
-                cpu_count = os.cpu_count()
-                os.sched_setaffinity(thread_id, tuple(range(cpu_count // 2, cpu_count+1)))
-            except Exception as e:
-                pass
+        try:
+            thread_id = threading.get_native_id()
+            cpu_count = os.cpu_count()
+            os.sched_setaffinity(thread_id, tuple(range(cpu_count // 2, cpu_count+1)))
+        except Exception as e:
+            pass
 
 
         self.model_name = sanitize_name(Path(self.model_path).stem)
@@ -293,8 +296,12 @@ class ProcessQnnExecutor:
 
         self.in_shm:SharedMemory|None = None
         self.out_shm:SharedMemory|None = None
+        self.input_array_list:list[np.ndarray]|None = None
+        self.output_array_list:list[np.ndarray]|None = None
+
         try:
             self.in_shm:SharedMemory = SharedMemory(name=in_shm_name) # 连接到共享内存
+            self.input_array_list = get_shared_memory_view(self.in_shm, input_args_list)
         except Exception as e:
             self.in_shm = None
 
@@ -304,59 +311,81 @@ class ProcessQnnExecutor:
 
         self.release()
 
+    def lookup_out_shm(self) -> bool:
+        """从 manager_dict 查找已注册的 out_shm
+        找到则打开（或复用）并恢复 output_args_list，返回 True；未找到返回 False
+        """
+        try:
+            out_shm_info = self.manager_dict.get('out_shm_info')
+        except Exception:
+            return False
+
+        if not out_shm_info:
+            return False
+
+        out_shm_name, stored_args = out_shm_info
+
+        # 已是同一个 shm → 无需重复操作
+        if self.out_shm is not None:
+            if self.out_shm.name == out_shm_name:
+                return True
+            else:
+                self.output_array_list = None
+                unlink_shm(self.out_shm)
+                self.out_shm = None
+
+        try:
+            self.out_shm = SharedMemory(name=out_shm_name)
+        except Exception:
+            self.out_shm = None
+            return False
+
+        self.output_args_list = stored_args
+        return True
+
+    def register_out_shm_to_manager(self, out_shm:SharedMemory, output_args_list:list) -> None:
+        """将当前 out_shm 及 output_args_list 注册到 manager_dict
+        子进程在首次创建 out_shm 时调用，使主进程和其他子进程可发现
+        dtype 序列化为字符串以确保跨进程兼容
+        使用单键元组写入，保证原子性
+        """
+        serializable_args = [(shape, str(dtype), offset_range)
+                             for shape, dtype, offset_range in output_args_list]
+        self.manager_dict['out_shm_info'] = (out_shm.name, serializable_args)
+
     def run(self):
         while True:
             conn_get = self.child_conn.recv()
 
-            if conn_get[0] is None:
-                pass
+            if conn_get is True:
+                pass  # 正常推理信号
             else:
-                if conn_get[0] is True:
-                    out_shm_name, self.output_args_list = conn_get[1], conn_get[2]
-                    if self.out_shm is not None and self.out_shm.name != out_shm_name:
-                        unlink_shm(self.out_shm.name)
+                return None  # False → 关闭信号
 
-                    try:
-                        self.out_shm = SharedMemory(name=out_shm_name)
-                    except Exception as e:
-                        return None
-                else:
-                    return None
-
-
-            input_data:list[np.ndarray] = []
-            try:
-                for (input_shape, input_dtype, offset_range) in self.input_args_list:
-                    input_tensor = np.ndarray(input_shape, input_dtype, buffer=self.in_shm.buf[offset_range[0]:offset_range[1]]) # 创建 NumPy 数组视图
-                    input_data.append(input_tensor)
-            except Exception as e:
-                return None
-            
 
             try:
-                output_list:list[np.ndarray] = self.qnn_context.Inference(input_data) # 执行推理
+                output_list:list[np.ndarray] = self.qnn_context.Inference(self.input_array_list) # 执行推理
             except Exception as e:
                 print(f"QNN Inference error in process {self.pid}: {e}")
                 output_list = []
                 continue
 
-            
-            if output_list:
-                if self.out_shm is not None:
-                    for i, (output_shape, output_dtype, offset_range) in enumerate(self.output_args_list):
-                        try:
-                            shm_array = np.ndarray(output_shape, output_dtype, buffer=self.out_shm.buf[offset_range[0]:offset_range[1]]) # 创建 NumPy 数组视图
-                        except Exception as e:
-                            return None
-                        
-                        np.copyto(shm_array, output_list[i], casting='unsafe')
 
-                    output = (None,)
-                else:
-                    self.out_shm, self.output_args_list = create_shared_memory(output_list)
-                    out_view = get_shared_memory_view(self.out_shm, self.output_args_list)
-                    copy_listarray(output_list, out_view)
-                    output = (True, self.out_shm.name, self.output_args_list)
+            if output_list:
+                if self.output_array_list is None:
+                    # 尝试从 Manager 查找已有的 out_shm（其他子进程可能已创建）
+                    if self.lookup_out_shm():
+                        pass
+                    else:
+                        # 首个完成的子进程：创建 out_shm，注册到 manager
+                        self.out_shm, self.output_args_list = create_shared_memory(output_list)
+                        self.register_out_shm_to_manager(self.out_shm, self.output_args_list)
+
+                    self.output_array_list = get_shared_memory_view(self.out_shm, self.output_args_list)
+
+                # 复用已有的共享内存视图，直接复制数据
+                copy_listarray(output_list, self.output_array_list)
+                output = True
             else:
                 output = None
 
@@ -365,13 +394,23 @@ class ProcessQnnExecutor:
     def release(self):
         del self.qnn_context
         self.qnn_context = None
-        gc.collect()
+        #gc.collect()
+
+        self.child_conn.close()
+
+        if self.input_array_list is not None:
+            self.input_array_list.clear()
+            self.input_array_list = None
+
+        if self.output_array_list is not None:
+            self.output_array_list.clear()
+            self.output_array_list = None
 
         if self.in_shm is not None:
             self.in_shm.close()
 
         if self.out_shm is not None:
-            self.out_shm.close()
+            unlink_shm(self.out_shm)
 
         print(f'qnn_context process {self.model_name} released')
         exit(0)
@@ -388,22 +427,35 @@ class QnnProcessPool():
 
         self.shared_input_memory:SharedMemory|None = None
         self.shared_output_memory:SharedMemory|None = None
+        self.input_array_list:list[np.ndarray]|None = None
+        self.output_array_list:list[np.ndarray]|None = None
+
+        self.manager:SyncManager|None = None
 
         self.inited_process_num = 0
         self.frame_index = 0
 
-    def init_qnn_process(self) -> None:
+    def init_qnn_process(self, input_array_list:list[np.ndarray]) -> None:
         self.process_list = []
         self.parent_conn_list = []
         self.child_conn_list = []
 
+        # 创建 NumPy 视图列表,供子进程推理时使用
+        self.shared_input_memory, input_args_list = create_shared_memory(input_array_list)
+        self.input_array_list = get_shared_memory_view(self.shared_input_memory, input_args_list)
+        copy_listarray(input_array_list, self.input_array_list) # 将输入数据复制到共享内存
+
+        self.manager = Manager()
+        self.manager_dict = self.manager.dict()
+
         model_name = Path(self.model_path).stem
+        in_shm_name = self.shared_input_memory.name
 
         for i in range(self.process_num):
             process_name = f"{model_name}_QNN_process_{i}"
             parent_conn, child_conn = Pipe(duplex=True)
 
-            process_args = (child_conn, self.model_path, self.shared_input_memory.name, self.input_args_list)
+            process_args = (child_conn, self.model_path, in_shm_name, input_args_list, self.manager_dict)
             Process_qnn = Process(target=ProcessQnnExecutor, name=process_name, args=process_args)
             Process_qnn.start()
 
@@ -415,18 +467,13 @@ class QnnProcessPool():
 
 
     def queue_put(self) -> None:
-        input_args = (None,)
-
-        persent_excutor_index = self.frame_index
-
-        if self.shared_output_memory is not None and self.inited_process_num < self.process_num:
-            input_args = (True, self.shared_output_memory.name, self.output_args_list)
-            self.inited_process_num += 1
-
-        self.parent_conn_list[persent_excutor_index].send(input_args) # 提交任务
-
+        """向子进程发送推理信号,只发送 True
+        子进程自行从 manager_dict 查找 out_shm
+        """
+        idx = self.frame_index
+        self.parent_conn_list[idx].send(True)
         self.frame_index = (self.frame_index + 1) % self.process_num
-
+    
     def put(self, input_data:list[np.ndarray], input_format:str='nhwc') -> None:
         """
         将任务放入进程池
@@ -437,29 +484,28 @@ class QnnProcessPool():
             input_data = [np.transpose(input_tensor, (0, 2, 3, 1)).copy(order='C') for input_tensor in input_data]
 
 
-        if self.shared_input_memory is not None:
-            input_view = get_shared_memory_view(self.shared_input_memory, self.input_args_list)
-            copy_listarray(input_data, input_view)
-        else:
-            self.shared_input_memory, self.input_args_list = create_shared_memory(input_data)
-            input_view = get_shared_memory_view(self.shared_input_memory, self.input_args_list)
-            copy_listarray(input_data, input_view)
+        if self.input_array_list is not None:
+            copy_listarray(input_data, self.input_array_list)
+
 
         if self.process_list is None:
-            self.init_qnn_process()
+            self.init_qnn_process(input_data)
             
             for i in range(self.process_num):
                 self.queue_put()
-
-            # if self.process_num == 1:
-            #     self.queue_put()
+                self.inited_process_num += 1
 
         else:
             self.queue_put()
 
     def get(self, block:bool=True) -> list[np.ndarray]|None:
-        """
-        从队列中获取一个任务的结果
+        """从子进程获取推理结果
+
+        子进程回复 True(有结果)或 None(推理失败)
+        主进程按需从 manager_dict 懒加载 output_array_list:
+        - 首次(output_array_list 为 None)→ 查 manager_dict,有则创建视图并返回独立副本
+        - 后续 → 直接返回零拷贝视图(子进程已写入)
+        - manager_dict 无 out_shm 信息 → 返回 None
         """
         if not self.process_list:
             return None
@@ -472,67 +518,78 @@ class QnnProcessPool():
             if self.parent_conn_list[self.frame_index].poll(): 
                 results = self.parent_conn_list[self.frame_index].recv()
 
+        if not results:
+            return None
+
         output_list = None
-        if results is not None:
-            if self.shared_output_memory is not None:
-                output_list = get_shared_memory_view(self.shared_output_memory, self.output_args_list)
+        if self.output_array_list is None:
+            # 首次：从 manager_dict 查找并创建 output_array_list
+            out_shm_info = self.manager_dict.get('out_shm_info')
 
-            elif results[0] is True:
-                shared_output_memory_name, output_args_list = results[1], results[2]
-                shared_output_memory = SharedMemory(name=shared_output_memory_name)
+            if out_shm_info is not None:
+                out_shm_name, output_args_list = out_shm_info
+                self.shared_output_memory = SharedMemory(name=out_shm_name)
+                self.output_array_list = get_shared_memory_view(self.shared_output_memory, output_args_list)
 
-                output_list = get_shared_memory_view(shared_output_memory, output_args_list)
-                output_list = [array.copy() for array in output_list] # 从共享内存复制到独立内存,避免后续被覆盖
+                output_list = self.output_array_list
 
-                self.shared_output_memory, self.output_args_list = create_shared_memory(output_list)
-                out_view = get_shared_memory_view(self.shared_output_memory, self.output_args_list)
-                copy_listarray(output_list, out_view)
-                shared_output_memory.close()
-                    
+        else:
+            # 后续帧：零拷贝返回视图
+            output_list = self.output_array_list
+
+        if self.inited_process_num <= self.process_num and output_list:
+            # 首轮返回独立副本，避免调用方意外修改共享内存
+            output_list = [array.copy() for array in output_list]
 
         return output_list
 
 
     def release(self) -> bool:
         """
-        释放所有资源,包括进程池和共享内存
+        释放所有资源,包括进程池、共享内存和 Manager
         """
+
+        if self.parent_conn_list is not None:
+            for parent_conn in self.parent_conn_list:
+                parent_conn.send(False)
+
+        if self.process_list is not None:
+            for i in range(len(self.process_list)):
+                Process_qnn = self.process_list.pop(0)
+                Process_qnn.join()
+            self.process_list = None
+
 
         if self.child_conn_list is not None:
             for child_conn in self.child_conn_list:
-                if child_conn.poll():
-                    child_conn.recv()
-
-        if self.process_list is not None:
-            for parent_conn in self.parent_conn_list:
-                parent_conn.send((False,))
-                if parent_conn.poll():
-                    parent_conn.recv()
-
-        if self.process_list is not None:
-            for i in range(self.process_num):
-                Process_qnn = self.process_list.pop(0)
-                Process_qnn.join(timeout=0.1)
-            
-        if self.child_conn_list is not None:
-            for i in range(self.process_num):
-                child_conn = self.child_conn_list.pop(0)
                 child_conn.close()
-            
+            self.child_conn_list.clear()
+            self.child_conn_list = None
+
         if self.parent_conn_list is not None:
-            for i in range(self.process_num):
-                parent_conn = self.parent_conn_list.pop(0)
+            for parent_conn in self.parent_conn_list:
                 parent_conn.close()
-            
+            self.parent_conn_list.clear()
+            self.parent_conn_list = None
+
+
+        if self.input_array_list is not None:
+            self.input_array_list.clear()
+            self.input_array_list = None
+
+        if self.output_array_list is not None:
+            self.output_array_list.clear()
+            self.output_array_list = None
+
         for shm in [self.shared_input_memory, self.shared_output_memory]:
             if shm is not None:
                 unlink_shm(shm)
 
         self.shared_input_memory = None
         self.shared_output_memory = None
-        self.process_list = None
-        self.parent_conn_list = None
-        self.child_conn_list = None
+
+        if self.manager is not None:
+            self.manager.shutdown()
 
         self.frame_index = 0
         self.inited_process_num = 0 
@@ -594,13 +651,14 @@ class ProcessQnnExecutor2:
         找到则打开(或复用)并恢复 output_args_list,返回 True；未找到返回 False
         """
         try:
-            out_shm_name = self.manager_dict.get('out_shm_name')
-            stored_args = self.manager_dict.get('output_args_list')
+            out_shm_info = self.manager_dict.get('out_shm_info')
         except Exception:
             return False
 
-        if not out_shm_name or not stored_args:
+        if not out_shm_info:
             return False
+
+        out_shm_name, stored_args = out_shm_info
 
         # 已是同一个 shm → 无需重复操作
         if self.out_shm is not None:
@@ -627,12 +685,12 @@ class ProcessQnnExecutor2:
         """将当前 out_shm 及 output_args_list 注册到 manager_dict
         子进程在首次创建 out_shm 时调用,使主进程和其他子进程可发现
         dtype 序列化为字符串以确保跨进程兼容
+        使用单键元组写入，保证原子性
         """
         serializable_args = [(shape, str(dtype), offset_range)
                              for shape, dtype, offset_range in output_args_list]
         
-        self.manager_dict['out_shm_name'] = out_shm.name
-        self.manager_dict['output_args_list'] = serializable_args
+        self.manager_dict['out_shm_info'] = (out_shm.name, serializable_args)
 
     def run(self):
         while True:
@@ -677,7 +735,7 @@ class ProcessQnnExecutor2:
     def release(self):
         del self.qnn_context
         self.qnn_context = None
-        gc.collect()
+        #gc.collect()
 
         self.child_queue.close()
         self.child_queue.cancel_join_thread()
@@ -718,11 +776,10 @@ class QnnProcessPool2():
         self.input_array_list:list[np.ndarray]|None = None
         self.output_array_list:list[np.ndarray]|None = None
 
+        self.manager:SyncManager|None = None
+
         self.frame_index = 0
         self.inited_process_num = 0
-
-        self.manager = Manager()
-        self.manager_dict = self.manager.dict()
 
     def init_qnn_process(self, input_array_list:list[np.ndarray]) -> None:
         self.process_list = []
@@ -733,6 +790,9 @@ class QnnProcessPool2():
         self.shared_input_memory, input_args_list = create_shared_memory(input_array_list)
         self.input_array_list = get_shared_memory_view(self.shared_input_memory, input_args_list)
         copy_listarray(input_array_list, self.input_array_list) # 将输入数据复制到共享内存
+
+        self.manager = Manager()
+        self.manager_dict = self.manager.dict()
 
         model_name = Path(self.model_path).stem
         in_shm_name = self.shared_input_memory.name
@@ -814,10 +874,10 @@ class QnnProcessPool2():
         output_list = None
         if self.output_array_list is None:
             # 首次：从 manager_dict 查找并创建 output_array_list
-            out_shm_name = self.manager_dict.get('out_shm_name')
-            output_args_list = self.manager_dict.get('output_args_list')
+            out_shm_info = self.manager_dict.get('out_shm_info')
 
-            if out_shm_name is not None and output_args_list is not None:
+            if out_shm_info is not None:
+                out_shm_name, output_args_list = out_shm_info
                 self.shared_output_memory = SharedMemory(name=out_shm_name)
                 self.output_array_list = get_shared_memory_view(self.shared_output_memory, output_args_list)
 
@@ -847,7 +907,6 @@ class QnnProcessPool2():
             for i in range(len(self.process_list)):
                 Process_qnn = self.process_list.pop(0)
                 Process_qnn.join(timeout=0.1)
-
             self.process_list = None
             
 
@@ -881,7 +940,8 @@ class QnnProcessPool2():
         self.shared_input_memory = None
         self.shared_output_memory = None
 
-        self.manager.shutdown()
+        if self.manager is not None:
+            self.manager.shutdown()
 
         self.frame_index = 0
         self.inited_process_num = 0
