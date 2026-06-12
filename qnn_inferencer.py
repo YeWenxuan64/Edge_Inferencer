@@ -270,11 +270,12 @@ class ProcessQnnExecutor:
     - 读取：查找已注册的 out_shm 名称及 output_args_list
     - 写入：首次创建 out_shm 时直接注册到 manager_dict（无需经主进程中转）
     """
-    def __init__(self, child_conn:Connection, model_path:str, in_shm_name:str, input_args_list:list, manager_dict):
-        self.child_conn = child_conn
-        self.model_path = model_path
+    def __init__(self, child_conn, model_path, in_shm_name:str, input_args_list:list, manager_dict, out_info_name):
+        self.child_conn:Connection = child_conn
+        self.model_path:str = model_path
 
         self.manager_dict:DictProxy = manager_dict
+        self.out_info_name:str = out_info_name
         self.output_args_list:list|None = None
 
         self.pid = os.getpid()
@@ -287,10 +288,10 @@ class ProcessQnnExecutor:
 
 
         self.model_name = sanitize_name(Path(self.model_path).stem)
-        self.model_name = f"{self.model_name}_{self.pid}"
+        self.model_name_with_pid = f"{self.model_name}_{self.pid}"
 
         QNNConfig.Config('None', Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
-        self.qnn_context = QNNContext(model_name=self.model_name, model_path=model_path, is_async=True)
+        self.qnn_context = QNNContext(model_name=self.model_name_with_pid, model_path=model_path, is_async=True)
         PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)
 
 
@@ -306,7 +307,7 @@ class ProcessQnnExecutor:
             self.in_shm = None
 
         if self.in_shm is not None:
-            print(f"QNNContext Process: {self.model_name} Initialized")
+            print(f"QNNContext Process: {self.model_name_with_pid} Initialized")
             self.run()
 
         self.release()
@@ -316,7 +317,7 @@ class ProcessQnnExecutor:
         找到则打开（或复用）并恢复 output_args_list，返回 True；未找到返回 False
         """
         try:
-            out_shm_info = self.manager_dict.get('out_shm_info')
+            out_shm_info = self.manager_dict.get(self.out_info_name)
         except Exception:
             return False
 
@@ -351,7 +352,7 @@ class ProcessQnnExecutor:
         """
         serializable_args = [(shape, str(dtype), offset_range)
                              for shape, dtype, offset_range in output_args_list]
-        self.manager_dict['out_shm_info'] = (out_shm.name, serializable_args)
+        self.manager_dict[self.out_info_name] = (out_shm.name, serializable_args)
 
     def run(self):
         while True:
@@ -412,14 +413,43 @@ class ProcessQnnExecutor:
         if self.out_shm is not None:
             unlink_shm(self.out_shm)
 
-        print(f'qnn_context process {self.model_name} released')
+        print(f'qnn_context process {self.model_name_with_pid} released')
         exit(0)
 
 class QnnProcessPool():
+    instance_num = 0
+    manager:SyncManager|None = None
+    manager_dict:DictProxy|None = None
+
+    @classmethod
+    def manage_dict_manager(cls, release:bool=False) -> DictProxy|None:
+        if not release:
+            if cls.manager is None:
+                cls.manager = Manager()
+                cls.manager_dict = cls.manager.dict()
+
+            cls.instance_num += 1
+            return cls.manager_dict
+        
+        else:
+            cls.instance_num -= 1
+
+            if cls.manager is not None and cls.instance_num <= 0:
+                cls.manager.shutdown()
+                cls.manager = None
+                cls.manager_dict = None
+                print("QnnProcessPool manager_dict released")
+
+            return None
+
+
     def __init__(self, model_path:str, cores:tuple[int] = (0, 1)):
         self.model_path = model_path
         self.cores = tuple(cores)
         self.process_num = len(self.cores)
+
+        self.model_name = str(Path(self.model_path).stem)
+        self.out_info_name = f"{sanitize_name(self.model_name)}_out_shm_info"
 
         self.process_list:list[Process]|None = None
         self.parent_conn_list:list[Connection]|None = None
@@ -429,8 +459,6 @@ class QnnProcessPool():
         self.shared_output_memory:SharedMemory|None = None
         self.input_array_list:list[np.ndarray]|None = None
         self.output_array_list:list[np.ndarray]|None = None
-
-        self.manager:SyncManager|None = None
 
         self.inited_process_num = 0
         self.frame_index = 0
@@ -445,19 +473,17 @@ class QnnProcessPool():
         self.input_array_list = get_shared_memory_view(self.shared_input_memory, input_args_list)
         copy_listarray(input_array_list, self.input_array_list) # 将输入数据复制到共享内存
 
-        self.manager = Manager()
-        self.manager_dict = self.manager.dict()
-
-        model_name = Path(self.model_path).stem
+        manager_dict = self.manage_dict_manager()
         in_shm_name = self.shared_input_memory.name
 
         for i in range(self.process_num):
-            process_name = f"{model_name}_QNN_process_{i}"
+            process_name = f"{self.model_name}_QNN_process_{i}"
             parent_conn, child_conn = Pipe(duplex=True)
 
-            process_args = (child_conn, self.model_path, in_shm_name, input_args_list, self.manager_dict)
+            process_args = (child_conn, self.model_path, in_shm_name, input_args_list, manager_dict, self.out_info_name)
             Process_qnn = Process(target=ProcessQnnExecutor, name=process_name, args=process_args)
             Process_qnn.start()
+            Process_qnn.pid
 
             atexit.register(Process_qnn.kill)
 
@@ -524,7 +550,7 @@ class QnnProcessPool():
         output_list = None
         if self.output_array_list is None:
             # 首次：从 manager_dict 查找并创建 output_array_list
-            out_shm_info = self.manager_dict.get('out_shm_info')
+            out_shm_info = self.manager_dict.get(self.out_info_name)
 
             if out_shm_info is not None:
                 out_shm_name, output_args_list = out_shm_info
@@ -588,8 +614,7 @@ class QnnProcessPool():
         self.shared_input_memory = None
         self.shared_output_memory = None
 
-        if self.manager is not None:
-            self.manager.shutdown()
+        self.manage_dict_manager(release=True)
 
         self.frame_index = 0
         self.inited_process_num = 0 
