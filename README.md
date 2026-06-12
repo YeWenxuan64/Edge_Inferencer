@@ -14,7 +14,7 @@
 
 ### ✨ 功能亮点
 
-- **三后端统一接口** — RKNN（Rockchip NPU）/ QNN（Qualcomm HTP）/ ONNX Runtime（CPU），`put()` / `get()` / `release()` 三方法通吃
+- **三后端统一接口** — RKNN（Rockchip NPU）/ QNN（Qualcomm HTP）/ ONNX Runtime（CPU），`put()` / `get()` / `release()` 三方法
 - **自动模型识别** — 根据文件后缀 (`.rknn` / `.bin` / `.onnx`) 自动选择推理后端，零配置
 - **多模式推理** — 单线程执行、线程池并发、进程池 + 共享内存，按需选择性能与开销的平衡
 - **多核 NPU 支持** — 指定 NPU 核心 (Core 0/1/2/ALL)，线程池/进程池自动轮询分发
@@ -31,6 +31,8 @@
 | [`qnn_inferencer.py`](./qnn_inferencer.py) | Qualcomm HTP 推理：`QnnExecutor`（单线程）/ `QnnProcessPool`（进程池+共享内存） |
 | [`onnx_inferencer.py`](./onnx_inferencer.py) | ONNX Runtime 推理：`OnnxExecutor`（CPU） |
 
+> **底层 SDK：** Rockchip NPU 使用 **rknn-toolkit-lite2**；Qualcomm HTP 使用 **QAI AppBuilder**（基于 QAIRT SDK）；ONNX 使用 **onnxruntime**。
+
 
 
 ## 🏗️ 架构
@@ -42,7 +44,7 @@
     └─────┬──────────────┬─────────────┬─────┘
           │              │             │
     ┌─────▼──────┐ ┌─────▼──────┐ ┌────▼─────┐
-    │  RKNN      │ │   QNN      │ │  ONNX    │
+    │  RKNPU     │ │  HTP       │ │  ONNX    │
     │ (Rockchip) │ │ (Qualcomm) │ │ (CPU)    │
     ├────────────┤ ├────────────┤ ├──────────┤
     │ Executor   │ │ Executor   │ │ Executor │
@@ -183,6 +185,32 @@ returns:    get():Frame 0  get():Frame 0  get():Frame 1  get():Frame 2
 
 ---
 
+### ⚠️ 高通 QAI AppBuilder 并发推理的局限性
+
+QNN 并发推理面临一系列由 `QNNContext` 内部复杂性引发的固有限制：
+
+**根本原因：** Qualcomm HTP（DSP）通常不具备多个独立逻辑核心，其"并发"本质上是通过提高运算器（如矩阵乘法累加器）利用率与内存带宽利用率来实现的，而非真正的多核并行。
+
+**Python 端的限制：**
+- `QNNContext` 内部状态复杂，**不支持多线程并发访问**，必须加锁保护
+- 由于 Python GIL 与 QNN 锁的叠加，线程池在 QNN 场景下负收益
+- 因此只能退而求其次，在 **Python 端使用多进程（`multiprocessing`）** 来模拟并发
+
+**隐藏的稳定性风险：**
+
+| 风险 | 表现 | 推测原因 |
+|------|------|------|
+| **QNNContext 创建失败** | 进程池初始化时无法创建上下文 | 多进程同时争抢 DSP 资源，HTP 固件资源耗尽<br>~~高通工程师更更爆~~ |
+| **cDSP 内存申请失败** | 推理中途报错、进程异常退出 | DSP 侧共享内存碎片化，多进程各自持有独立上下文导致内存压力倍增<br>~~高通工程师更更爆~~ |
+| **与其他库冲突** | 与opencv库等同时使用时崩溃或卡死 | 多进程争抢同一硬件资源（DSP、CMA 内存池），缺乏全局调度<br>>~~高通工程师更更爆~~ |
+| **轮询开销** | 实际大部分时间耗在轮询多个推理任务而非真实并行计算 | HTP 的核心调度策略是时分复用而非空间并行 |
+
+> **建议：** 若追求稳定性，优先使用**单线程 `QnnExecutor` 模式**（`mult_task=False`），避免多进程带来的资源竞争。仅在性能压力测试或明确知晓硬件余量时，才考虑开启多进程并发。<br>
+>
+> 叶姐姐🍃: 不是哥们，你这大高通的soc高出来的性能就被这些手动并发的开销磨掉了
+
+---
+
 
 ## 📚 API 参考
 
@@ -212,13 +240,13 @@ AIInferencer(model_path: str, cores: tuple[int] = (0,), mult_task: bool = False)
 
 | 后缀 | 后端 | 平台 |
 |------|------|------|
-| `.rknn` | RKNN Lite | Rockchip NPU (RK3588/RK3576) |
-| `.bin` | QNN | Qualcomm HTP (QCS6490) |
+| `.rknn` | RKNN Lite | Rockchip NPU (RK3588/RK3576/RK3566) |
+| `.bin` | QAIRT | Qualcomm HTP (QCS6490 QCS8550 QCS9075) |
 | `.onnx` | ONNX Runtime | CPU (通用) |
 
 ---
 
-### 🪨 `RknnExecutor` / `RknnThreadPool`
+### `RknnExecutor` / `RknnThreadPool`
 
 Rockchip NPU 推理后端。
 
@@ -239,7 +267,7 @@ pool.release()
 
 ---
 
-### ⚡ `QnnExecutor` / `QnnProcessPool`
+### `QnnExecutor` / `QnnProcessPool`
 
 Qualcomm HTP 推理后端，三种模式可选。
 
@@ -260,7 +288,7 @@ pool.release()
 
 ---
 
-### 🧠 `OnnxExecutor`
+### `OnnxExecutor`
 
 ONNX Runtime CPU 推理后端。
 
@@ -371,7 +399,7 @@ model.release()
 - **首次调用 `put()` 才会加载模型** — 延迟初始化减少启动时间
 - **并发模式下的 `put()` 返回 `None`** — 需要通过 `get()` 获取结果
 - **`get(block=False)` 非阻塞** — 结果未就绪时返回 `None`，不会卡死主线程
-- **QNN 进程池使用共享内存** — 自动管理创建与清理，退出时自动释放
+- **QNN 进程池使用共享内存** — 自动管理创建与清理，正常退出时自动释放
 - **NCHW 输入** — 后端会自动转置为 NHWC（RKNN/QNN）或保持 NCHW（ONNX）
 
 
