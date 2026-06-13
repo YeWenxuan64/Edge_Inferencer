@@ -140,7 +140,7 @@ def timeit(func):
             if end - last_print_time >= 1.0:
                 last_print_time = end
                 mean_time = sum(time_list) / time_length
-                print(f"{func.__name__} : {mean_time*1000:.3f} ms")
+                print(f"{func.__name__}: {mean_time*1000:.3f} ms, fps: {1.0/(mean_time + 1e-7):.3f}")
 
         return result
     return wrapper
