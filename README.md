@@ -22,7 +22,7 @@
 - **多核 NPU 支持** — 指定 NPU 核心 (Core 0/1/2/ALL)，线程池/进程池自动轮询分发
 - **格式自动转换** — 支持 NHWC / NCHW 输入，后端自动处理维度转置
 - **延迟初始化** — 首次 `put()` 时才加载模型，减少启动开销
-- **易于集成** — 三行代码接入自有项目，作为 [Focus-Finder_ModelDeploy](https://github.com/YeWenxuan64/Focus-Finder_ModelDeploy) 和 [Focus-Finder](https://github.com/YeWenxuan64/Focus-Finder) 的推理后端
+- **易于集成** — 三行代码接入自有项目，作为 [Edge_ModelDeploy](https://github.com/YeWenxuan64/Edge_ModelDeploy) 和 [Focus-Finder](https://github.com/YeWenxuan64/Focus-Finder) 的推理后端
 
 
 
