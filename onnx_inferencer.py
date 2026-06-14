@@ -1,4 +1,3 @@
-
 import numpy as np
 import onnxruntime as ort
 from onnxruntime import NodeArg

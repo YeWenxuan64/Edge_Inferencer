@@ -118,29 +118,67 @@ class AIInferencer:
 
 
 
-def timeit(func):
+def timeit(func=None, *, measure_cycle_time:bool=False):
+    """Decorator that measures and reports execution time / FPS of the wrapped function.
+
+    Supports two usage forms:
+        @timeit
+        @timeit(measure_cycle_time=True)
+
+    Args:
+        func: The function to wrap (auto-filled when used as @timeit without parentheses).
+        measure_cycle_time: If False (default), measures single-call duration (end - start).
+                            If True, measures cycle time between consecutive calls (start - last_start),
+                            which includes any idle/wait time between invocations.
+
+    Output (printed every ~1s):
+        Default:    func_name: X.XXX ms, fps: YYY.YYY
+        Cycle mode: func_name (per cycle): X.XXX ms, fps: YYY.YYY
+    """
     import time
     from functools import wraps
     from collections import deque
-    time_length = 30
+
+    time_length = 30  # rolling window size for averaging
     time_list = deque(maxlen=time_length)
-    last_print_time = time.perf_counter()
+    last_print_time = time.perf_counter()  # tracks when we last printed stats
 
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        nonlocal last_print_time
+    def decorator(func):
+        last_start_time = time.perf_counter()  # for cycle-time measurement
 
-        start = time.perf_counter()
-        try:
-            result = func(*args, **kwargs)
-        finally:
-            end = time.perf_counter()
-            time_list.append(end - start)
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            nonlocal last_print_time, last_start_time
 
-            if end - last_print_time >= 1.0:
-                last_print_time = end
-                mean_time = sum(time_list) / time_length
-                print(f"{func.__name__}: {mean_time*1000:.3f} ms, fps: {1.0/(mean_time + 1e-7):.3f}")
+            start = time.perf_counter()
+            try:
+                result = func(*args, **kwargs)
+            finally:
+                end = time.perf_counter()
 
-        return result
-    return wrapper
+                # Measure: single-call duration or cycle interval
+                if measure_cycle_time:
+                    elapsed = start - last_start_time
+                    last_start_time = start
+                else:
+                    elapsed = end - start
+
+                time_list.append(elapsed)
+
+                # Print rolling average every ~1s
+                if end - last_print_time >= 1.0:
+                    last_print_time = end
+                    mean_time = sum(time_list) / time_length
+
+                    if measure_cycle_time:
+                        print(f"{func.__name__} (per cycle): {mean_time*1000:.3f} ms, fps: {1.0/(mean_time + 1e-7):.3f}")
+                    else:
+                        print(f"{func.__name__}: {mean_time*1000:.3f} ms, fps: {1.0/(mean_time + 1e-7):.3f}")
+
+            return result
+        return wrapper
+
+    # Support both @timeit and @timeit(measure_cycle_time=True)
+    if func is None:
+        return decorator
+    return decorator(func)
