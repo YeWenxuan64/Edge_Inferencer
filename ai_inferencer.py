@@ -100,10 +100,10 @@ class AIInferencer:
 
             if self.mult_task:
                 self.inferfacer = qnn_infer.QnnProcessPool(self.model_path, self.cores)
-                #self.inferfacer = qnn_infer.QnnProcessPool2(self.model_path, self.cores)
+                #self.inferfacer = qnn_infer.QnnThreadPool(self.model_path, self.cores)
             else:
-                self.inferfacer = qnn_infer.QnnExecutor(self.model_path)
-                #self.inferfacer = qnn_infer.QnnExecutor2(self.model_path)
+                #self.inferfacer = qnn_infer.QnnExecutor(self.model_path)
+                self.inferfacer = qnn_infer.QnnExecutor2(self.model_path)
 
         elif self.model_type == 'onnx':
             with temporary_sys_path(CURRENT_DIR):
