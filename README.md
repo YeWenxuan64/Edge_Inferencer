@@ -416,4 +416,4 @@ model.release()
 
 ## 📄 License
 
-MIT License — Copyright (c) 2026 叶文轩
+[MIT License](./LICENSE) — Copyright (c) 2026 叶文轩
