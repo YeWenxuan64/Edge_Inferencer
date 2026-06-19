@@ -15,7 +15,7 @@ from multiprocessing.managers import SyncManager, DictProxy
 import numpy as np
 import qai_appbuilder
 from qai_appbuilder import QNNContext, Runtime, LogLevel, ProfilingLevel, PerfProfile, QNNConfig
-from qai_appbuilder import QNNContextProc, QNNShareMemory, DataType
+from qai_appbuilder import QNNContextProc, QNNShareMemory
 
 
 pkg_dir = os.path.dirname(os.path.abspath(qai_appbuilder.__file__))
@@ -30,6 +30,24 @@ def sanitize_name(name:str, replace_chars:str=r'()[]{}-\/:*?"<>|,') -> str:
     return name
 
 
+def count_qnn_output_size(qnn_context:QNNContext|QNNContextProc) -> int:
+    total_bytes = 0
+    out_shape_list = qnn_context.getOutputShapes()
+    out_dtype_list = qnn_context.getOutputDataType()
+
+    for dtype_str, shape in zip(out_dtype_list, out_shape_list):
+        # 从 dtype 字符串末尾提取位数, ufp8→8, fp16→16 → bytes = bits//8
+        bits = int(''.join(c for c in dtype_str if c.isdigit()))
+        elem_size = bits // 8
+        num_elems = 1
+        for dim in shape:
+            num_elems *= dim
+        tensor_bytes = num_elems * elem_size
+        total_bytes += tensor_bytes
+
+    return total_bytes
+
+
 class QnnExecutor():
     def __init__(self, model_path:str):
         self.model_path = model_path
@@ -41,8 +59,7 @@ class QnnExecutor():
     def init_qnn(self):
         QNNConfig.Config('None', Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
         
-        nat_dtype = DataType.NATIVE
-        self.qnn_context = QNNContext(self.model_name, self.model_path, is_async=True, input_data_type=nat_dtype, output_data_type=nat_dtype)
+        self.qnn_context = QNNContext(self.model_name, self.model_path, is_async=True)
         PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)
 
         print(f"QNNContext: {self.model_name} Initialized")
@@ -90,14 +107,17 @@ class QnnExecutor2():
         QNNConfig.Config('None', Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
 
         process_name = f"{self.model_name}_proc"
+
+        self.qnn_context_proc = QNNContextProc(self.model_name, process_name, self.model_path)
         
-        total_input_bytes = sum(arr.nbytes for arr in input_array_list)
-        self.in_shm = QNNShareMemory(f"{self.model_name}_in_shm", total_input_bytes)
+        total_input_bytes = sum(arr.size * 4 for arr in input_array_list)
+        total_output_bytes = count_qnn_output_size(self.qnn_context_proc)
+        total_bytes = total_input_bytes + total_output_bytes
 
-        nat_dtype = DataType.NATIVE
-        self.qnn_context_proc = QNNContextProc(self.model_name, process_name, self.model_path, is_async=True, input_data_type=nat_dtype, output_data_type=nat_dtype)
+        self.in_shm = QNNShareMemory(f"{self.model_name}_in_shm", total_bytes)
+
+        
         PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)
-
         print(f"QNNContextProc: {self.model_name} Initialized")
     
     def put(self, input_data:list[np.ndarray], input_format:str='nhwc') -> list[np.ndarray]|None:
@@ -241,8 +261,7 @@ class ProcessQnnExecutor:
         self.model_name_with_pid = f"{self.model_name}_{self.pid}"
 
         QNNConfig.Config('None', Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
-        nat_dtype = DataType.NATIVE
-        self.qnn_context = QNNContext(self.model_name_with_pid, model_path, is_async=True, input_data_type=nat_dtype, output_data_type=nat_dtype)
+        self.qnn_context = QNNContext(self.model_name_with_pid, model_path, is_async=True)
         PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)
 
 
@@ -573,6 +592,15 @@ class QnnProcessPool():
         return True 
 
 
+class QnnExecutor3(QnnProcessPool):
+    def __init__(self, model_path:str):
+        super().__init__(model_path, cores=(0,))
+
+    def put(self, input_data:list[np.ndarray], input_format:str='nhwc') -> list[np.ndarray]|None:
+        super().put(input_data, input_format)
+        output = self.get(block=True)
+        return output
+
 
 from concurrent.futures import ThreadPoolExecutor, Future
 
@@ -599,16 +627,17 @@ class QnnThreadPool():
         in_shm_list = []
 
         model_name = Path(self.model_path).stem
-        nat_dtype = DataType.NATIVE
         total_input_bytes = sum(arr.nbytes for arr in input_array_list)
 
 
         for i in range(self.thread_num ):
             process_name = f"{model_name}_QNN_process_{i}"
+            qnn_process = QNNContextProc(model_name, process_name, self.model_path, is_async=True)
 
-            qnn_process = QNNContextProc(model_name, process_name, self.model_path, is_async=True, input_data_type=nat_dtype, output_data_type=nat_dtype)
+            total_output_bytes = count_qnn_output_size(qnn_process)
+            total_bytes = total_input_bytes + total_output_bytes
 
-            in_shm = QNNShareMemory(f"{process_name}_inshm", total_input_bytes)
+            in_shm = QNNShareMemory(f"{process_name}_inshm", total_bytes)
             qnn_process_list.append(qnn_process)
             self.in_shm_list.append(in_shm)
 
