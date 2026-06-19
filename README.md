@@ -1,4 +1,5 @@
 # Edge_Inferencer
+![madewithlove](https://img.shields.io/badge/made_with-%E2%9D%A4-red?style=for-the-badge&labelColor=pink)
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
@@ -147,17 +148,18 @@ for frame in video_stream:
 model.release()
 ```
 
-> **RKNN** 线程池使用 `ThreadPoolExecutor`，**QNN** 线程池使用 `ThreadPoolExecutor` + 线程亲和性绑定，**QNN** 进程池使用 `multiprocessing.Process` + 共享内存拷贝
+> **RKNN** 并发使用线程池 `ThreadPoolExecutor`，**QNN** 并发使用进程池 `multiprocessing.Process` + 共享内存拷贝
 
 ---
 
 ### ⚠️ 多任务模式帧错位说明
+由于RKNPU和QNN的并发限制。如RKNPU的宣传算力为所有核心的算力之和，且rk3588、rk3576等又是多核心的NPU，所以单NPU核心的算力有限，且确认了在同一个NPU上并发虽不报错是负收益。<br>而在高通HTP上情况则要复杂，为了不报错，只能使用进程隔离。<br>所以只能以帧为单位分发去并发，让提交当前帧任务之后可以立即获取上一帧的结果。
 
 `RknnThreadPool` 和 `QNNProcessPool` 的 `put()` / `get()` 存在**固定的帧偏移**，偏移量等于任务数 (`thread_num`)。
 
 **原因：** 首次调用 `put()` 初始化线程池时，会用同一帧向每个核心提交一个推理任务（填满 `thread_num` 个队列槽位），后续每次 `put()` 只追加一个任务。因此 `get()` 返回的结果始终滞后于当前 `put()` 的帧。
 
-**以任务 (`cores=(0, 1)`) 为例：**
+**以任务 (`cores=(0, 1), mult_task=True`) 为例：**
 
 ```
 time line:  put(Frame 0) → put(Frame 1) → put(Frame 2) → put(Frame 3) 
@@ -269,11 +271,10 @@ result = pool.get(block=True)
 pool.release()
 ```
 
----
 
 ### `QnnExecutor` / `QnnProcessPool`
 
-Qualcomm HTP 推理后端，三种模式可选。
+Qualcomm HTP 推理后端。
 
 ```python
 # 单线程
@@ -290,11 +291,10 @@ result = pool.get(block=True)
 pool.release()
 ```
 
----
 
 ### `OnnxExecutor`
 
-ONNX Runtime CPU 推理后端。
+ONNX Runtime CPU 推理后端 (用于在转换为 onnx 模型后进行测试用)。
 
 ```python
 from onnx_inferencer import OnnxExecutor
@@ -303,8 +303,6 @@ executor = OnnxExecutor(model_path='model.onnx')
 executor.set_providers(['CPUExecutionProvider'])  # 可选：指定执行提供者
 
 result = executor.put(input_data, input_format='nhwc')
-# 或
-result = executor.put(input_data, input_format='nchw')
 
 executor.release()
 ```
@@ -313,33 +311,40 @@ executor.release()
 
 ### ⏱️ `timeit` 装饰器
 
-内置推理耗时统计工具，滑动窗口计算平均耗时。
+内置推理耗时 / FPS 统计工具，滑动窗口计算平均耗时（窗口大小 30 次调用）。
 
-```python
-from ai_inferencer import timeit
+支持两种用法：
 
-@timeit
-def infer_frame(model, frame):
-    return model.put([frame])
-```
+| 形式 | 测量内容 |
+|------|----------|
+| `@timeit`<br>或(func = timeit(func)) | 单次函数执行耗时（`end - start`） |
+| `@timeit(measure_cycle_time=True)`<br>或(func = timeit(func, measure_cycle_time=True)) | 两次调用之间的周期时间（`start - last_start`），包含主线程空闲/等待时间 |
 
-输出示例：`infer_frame : 12.345 ms`（每 1 秒打印一次最近 30 次调用的平均耗时）
+
+输出示例（每 ~1 秒打印一次）：
+
+| 模式 | 输出格式 |
+|------|----------|
+| 默认 | `infer_frame: 12.345 ms, fps: 81.002` |
+| 周期模式 | `infer_frame (per cycle): 15.678 ms, fps: 63.783` |
 
 ---
 
 ## 🔗 集成示例
 
 ### 🎯 在 YOLO 推理中使用
-以本小姐的项目[Yolo26_ModelDeploy](https://github.com/YeWenxuan64/Yolo26_ModelDeploy)为例
+以本小姐的项目[Yolo11_ModelDeploy](https://github.com/YeWenxuan64/Yolo11_ModelDeploy)为例
 
 ```python
 import numpy as np
 import cv2
 from ai_inferencer import AIInferencer
 
+model_path = "path/to/your/model.rknn" # "path/to/your/model.bin"
+
 # 初始化推理引擎
 model = AIInferencer(
-    model_path='model.rknn',
+    model_path=model_path,
     cores=(0,),
     mult_task=False
 )
@@ -378,9 +383,11 @@ model.release()
 ```python
 from ai_inferencer import AIInferencer
 
+model_path = "path/to/your/model.rknn"
+
 # 双核并发，交替使用 Core 0 和 Core 1
 model = AIInferencer(
-    model_path='model.rknn',
+    model_path=model_path,
     cores=(0, 1),
     mult_task=True
 )
