@@ -31,32 +31,19 @@ def sanitize_name(name:str, replace_chars:str=r'()[]{}-\/:*?"<>|,') -> str:
 
 
 class QnnExecutor():
-    inited = False
-
-    @classmethod
-    def warm_npu(cls, model_path):
-        if not cls.inited:
-            QNNConfig.Config('None', Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
-            tmp_model_name = str(time.monotonic_ns())
-            qnn_context = QNNContext(model_name=tmp_model_name, model_path=model_path, is_async=True)
-            del qnn_context
-            gc.collect()
-            cls.inited = True
-
     def __init__(self, model_path:str):
         self.model_path = model_path
         self.model_name = sanitize_name(Path(self.model_path).stem)
         self.model_name += f"_{int(time.monotonic_ns())}"
-        #self.warm_npu(self.model_path)
 
         self.qnn_context = None
 
     def init_qnn(self):
         QNNConfig.Config('None', Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
         
-        self.qnn_context = QNNContext(model_name=self.model_name, model_path=self.model_path, is_async=True, input_data_type=DataType.NATIVE)
+        nat_dtype = DataType.NATIVE
+        self.qnn_context = QNNContext(self.model_name, self.model_path, is_async=True, input_data_type=nat_dtype, output_data_type=nat_dtype)
         PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)
-        #SetQNNPerfProfileGlobal()
 
         print(f"QNNContext: {self.model_name} Initialized")
     
@@ -90,30 +77,31 @@ class QnnExecutor():
 
         return ret
 
+
 class QnnExecutor2():
     def __init__(self, model_path:str):
         self.model_path = model_path
         self.model_name = sanitize_name(Path(self.model_path).stem)
 
-        self.qnn_context = None
+        self.qnn_context_proc = None
         self.in_shm:QNNShareMemory|None = None
 
     def init_qnn(self, input_array_list:list[np.ndarray]):
         QNNConfig.Config('None', Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
+
+        process_name = f"{self.model_name}_proc"
         
-        total_input_bytes = sum(arr.size * 4 for arr in input_array_list)
+        total_input_bytes = sum(arr.nbytes for arr in input_array_list)
         self.in_shm = QNNShareMemory(f"{self.model_name}_in_shm", total_input_bytes)
 
-        #model_name += f"_{int(time.monotonic_ns())}"
-        process_name = f"{self.model_name}_proc"
-
-        self.qnn_context = QNNContextProc(self.model_name, process_name, self.model_path, is_async=True)
+        nat_dtype = DataType.NATIVE
+        self.qnn_context_proc = QNNContextProc(self.model_name, process_name, self.model_path, is_async=True, input_data_type=nat_dtype, output_data_type=nat_dtype)
         PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)
 
-        print(f"QNNContext: {self.model_name} Initialized")
+        print(f"QNNContextProc: {self.model_name} Initialized")
     
     def put(self, input_data:list[np.ndarray], input_format:str='nhwc') -> list[np.ndarray]|None:
-        if self.qnn_context is None:
+        if self.qnn_context_proc is None:
             self.init_qnn(input_data)
 
         if input_format == 'nhwc':
@@ -122,7 +110,7 @@ class QnnExecutor2():
             input_data = [np.transpose(input_tensor, (0, 2, 3, 1)) for input_tensor in input_data] # NCHW -> NHWC
 
         try:
-            output = self.qnn_context.Inference(self.in_shm, input_data)
+            output = self.qnn_context_proc.Inference(self.in_shm, input_data)
         except Exception as e:
             print(f"QNN Inference error: {e}")
             return None
@@ -131,15 +119,15 @@ class QnnExecutor2():
 
     def release(self) -> bool:
         ret = False
-        if self.qnn_context is not None:
+        if self.qnn_context_proc is not None:
             #PerfProfile.RelPerfProfileGlobal()
-            del self.qnn_context
+            del self.qnn_context_proc
             del self.in_shm
-            self.qnn_context = None
+            self.qnn_context_proc = None
             self.in_shm = None
             #gc.collect()
             
-            print(f'QNN Executer {self.model_name} released')
+            print(f'QNNContextProc: {self.model_name} released')
             ret = True
 
         return ret
@@ -253,7 +241,8 @@ class ProcessQnnExecutor:
         self.model_name_with_pid = f"{self.model_name}_{self.pid}"
 
         QNNConfig.Config('None', Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
-        self.qnn_context = QNNContext(model_name=self.model_name_with_pid, model_path=model_path, is_async=True)
+        nat_dtype = DataType.NATIVE
+        self.qnn_context = QNNContext(self.model_name_with_pid, model_path, is_async=True, input_data_type=nat_dtype, output_data_type=nat_dtype)
         PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)
 
 
@@ -595,30 +584,29 @@ class QnnThreadPool():
         self.thread_num = len(self.cores)
         self.thread_pool = None
 
-        self.qnn_list:list|None
+        self.qnn_proc_list:list|None
         self.queue_list:list[Future] = []
 
-        self.in_shm:QNNShareMemory|None = None
         self.in_shm_list:list[QNNShareMemory]|None = None
         
         self.frame_index = 0
 
-    def init_qnn(self, input_array_list:list[np.ndarray]) -> list[QNNContextProc]:
+    def init_qnn(self, input_array_list:list[np.ndarray]) -> tuple[list[QNNContextProc], list[QNNShareMemory]]:
         QNNConfig.Config('None', Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
     
         model_name = sanitize_name(Path(self.model_path).stem)
         qnn_process_list = []
-        self.in_shm_list = []
+        in_shm_list = []
 
         model_name = Path(self.model_path).stem
-        total_input_bytes = sum(arr.size * 4 for arr in input_array_list)
+        nat_dtype = DataType.NATIVE
+        total_input_bytes = sum(arr.nbytes for arr in input_array_list)
 
-        #self.in_shm = QNNShareMemory(f"{model_name}_outshm", total_input_bytes)
 
         for i in range(self.thread_num ):
             process_name = f"{model_name}_QNN_process_{i}"
 
-            qnn_process = QNNContextProc(model_name, process_name, self.model_path, is_async=True)
+            qnn_process = QNNContextProc(model_name, process_name, self.model_path, is_async=True, input_data_type=nat_dtype, output_data_type=nat_dtype)
 
             in_shm = QNNShareMemory(f"{process_name}_inshm", total_input_bytes)
             qnn_process_list.append(qnn_process)
@@ -626,7 +614,7 @@ class QnnThreadPool():
 
 
         PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)
-        return qnn_process_list
+        return qnn_process_list, in_shm_list
 
     @staticmethod
     def thread_set_affinity() -> None:
@@ -636,18 +624,16 @@ class QnnThreadPool():
             print(f'Thread ID: {thread_id}')
 
     @staticmethod
-    def qnn_inference(qnn_context:QNNContextProc, in_shm:QNNShareMemory, input_list:list[np.ndarray]) -> list[np.ndarray]|None:
-        outputs:list = qnn_context.Inference(in_shm, input_list)
+    def qnn_inference(qnn_context_proc:QNNContextProc, in_shm:QNNShareMemory, input_list:list[np.ndarray]) -> list[np.ndarray]|None:
+        outputs:list = qnn_context_proc.Inference(in_shm, input_list)
         return outputs
 
     def queue_put(self, frame) -> None:
-        excutor_index = self.frame_index
-        self.queue_list.append(self.thread_pool.submit(self.qnn_inference, self.qnn_list[excutor_index], self.in_shm_list[excutor_index], frame))
+        current_index = self.frame_index
+        self.queue_list.append(self.thread_pool.submit(self.qnn_inference, self.qnn_proc_list[current_index], self.in_shm_list[current_index], frame))
 
-        if self.frame_index >= self.thread_num -1 :
-            self.frame_index = 0
-        else:
-            self.frame_index += 1
+        self.frame_index = (self.frame_index + 1) % self.process_num
+
 
     def put(self, input_data:list[np.ndarray], input_format:str='nhwc', block_all_gets:bool=False) -> None:
         if input_format == 'nhwc':
@@ -657,7 +643,7 @@ class QnnThreadPool():
 
         if self.thread_pool is None:
             self.thread_pool = ThreadPoolExecutor(self.thread_num, thread_name_prefix='qnn_thread_pool', initializer=self.thread_set_affinity)
-            self.qnn_list = self.init_qnn(input_data)
+            self.qnn_proc_list, self.in_shm_list = self.init_qnn(input_data)
             
             if block_all_gets is False:
                 for i, core in enumerate(self.cores):
@@ -687,8 +673,8 @@ class QnnThreadPool():
                 future = self.queue_list.pop(0)
                 future.cancel()
 
-            for i in range(len(self.qnn_list)):
-                qnn_context_proc = self.qnn_list.pop(0)
+            for i in range(len(self.qnn_proc_list)):
+                qnn_context_proc = self.qnn_proc_list.pop(0)
                 del qnn_context_proc
                 print(f'qnn_context: {i} released')
 
@@ -699,11 +685,6 @@ class QnnThreadPool():
             # PerfProfile.RelPerfProfileGlobal()
 
         self.thread_pool = None
-
-
-
-
-
 
 
 
