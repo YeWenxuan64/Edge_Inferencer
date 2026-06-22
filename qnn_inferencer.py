@@ -57,7 +57,7 @@ class QnnExecutor():
         self.qnn_context = None
 
     def init_qnn(self):
-        QNNConfig.Config('None', Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
+        QNNConfig.Config(Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
         
         self.qnn_context = QNNContext(self.model_name, self.model_path, is_async=True)
         PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)
@@ -104,7 +104,7 @@ class QnnExecutor2():
         self.in_shm:QNNShareMemory|None = None
 
     def init_qnn(self, input_array_list:list[np.ndarray]):
-        QNNConfig.Config('None', Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
+        QNNConfig.Config(Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
 
         process_name = f"{self.model_name}_proc"
 
@@ -260,7 +260,7 @@ class ProcessQnnExecutor:
         self.model_name = sanitize_name(Path(self.model_path).stem)
         self.model_name_with_pid = f"{self.model_name}_{self.pid}"
 
-        QNNConfig.Config('None', Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
+        QNNConfig.Config(Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
         self.qnn_context = QNNContext(self.model_name_with_pid, model_path, is_async=True)
         PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)
 
@@ -451,7 +451,7 @@ class QnnProcessPool():
             parent_conn, child_conn = Pipe(duplex=True)
 
             process_args = (child_conn, self.model_path, in_shm_name, input_args_list, manager_dict, self.out_info_name)
-            Process_qnn = Process(target=ProcessQnnExecutor, name=process_name, args=process_args)
+            Process_qnn = Process(target=ProcessQnnExecutor, name=process_name, args=process_args, daemon=True)
             Process_qnn.start()
             Process_qnn.pid
 
@@ -620,7 +620,7 @@ class QnnThreadPool():
         self.frame_index = 0
 
     def init_qnn(self, input_array_list:list[np.ndarray]) -> tuple[list[QNNContextProc], list[QNNShareMemory]]:
-        QNNConfig.Config('None', Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
+        QNNConfig.Config(Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
     
         model_name = sanitize_name(Path(self.model_path).stem)
         qnn_process_list = []
