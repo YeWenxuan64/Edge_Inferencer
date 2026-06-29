@@ -1,6 +1,8 @@
+import os
+import platform
 import numpy as np
 import onnxruntime as ort
-from onnxruntime import NodeArg
+from onnxruntime import NodeArg, SessionOptions, ExecutionMode
 
 
 class OnnxExecutor():
@@ -19,8 +21,26 @@ class OnnxExecutor():
         self.providers = providers
 
     def init_onnx(self):
+        sess_options = None
+
+        
+        architecture = platform.machine().lower()
+        if architecture in ["amd64", "x86", "x86_64", "i386"]:
+            cpu_count = 8
+
+            cpu_count_getted = os.cpu_count()
+            if cpu_count_getted is not None:
+                cpu_count = cpu_count_getted // 2
+
+            print(f"ONNX Executor initialized in {architecture} with {cpu_count} threads")
+            sess_options = SessionOptions()
+            sess_options.intra_op_num_threads = cpu_count  # 单个算子内并行线程数
+            sess_options.inter_op_num_threads = 1   # 算子间并行线程数
+            sess_options.execution_mode = ExecutionMode.ORT_SEQUENTIAL  # 顺序执行
+
+
         # 初始化 ONNX Runtime Session
-        self.session = ort.InferenceSession(self.model_path, providers=self.providers)
+        self.session = ort.InferenceSession(self.model_path, sess_options, providers=self.providers)
         input_details:list[NodeArg] = self.session.get_inputs()
 
         self.input_names = [inp.name for inp in input_details]
