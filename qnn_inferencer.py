@@ -1,6 +1,5 @@
 import os
 import re
-import gc
 import time
 import atexit
 import threading
@@ -57,7 +56,7 @@ class QnnExecutor():
         self.qnn_context = None
 
     def init_qnn(self):
-        QNNConfig.Config('None', Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
+        QNNConfig.Config(Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
         
         self.qnn_context = QNNContext(self.model_name, self.model_path, is_async=True)
         PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)
@@ -85,9 +84,8 @@ class QnnExecutor():
         ret = False
         if self.qnn_context is not None:
             #PerfProfile.RelPerfProfileGlobal()
-            del self.qnn_context
+            self.qnn_context.release()
             self.qnn_context = None
-            #gc.collect()
             
             print(f'QNN Executer {self.model_name} released')
             ret = True
@@ -104,7 +102,7 @@ class QnnExecutor2():
         self.in_shm:QNNShareMemory|None = None
 
     def init_qnn(self, input_array_list:list[np.ndarray]):
-        QNNConfig.Config('None', Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
+        QNNConfig.Config(Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
 
         process_name = f"{self.model_name}_proc"
 
@@ -141,11 +139,11 @@ class QnnExecutor2():
         ret = False
         if self.qnn_context_proc is not None:
             #PerfProfile.RelPerfProfileGlobal()
-            del self.qnn_context_proc
-            del self.in_shm
+            self.qnn_context_proc.release()
+            self.in_shm.release()
+
             self.qnn_context_proc = None
             self.in_shm = None
-            #gc.collect()
             
             print(f'QNNContextProc: {self.model_name} released')
             ret = True
@@ -260,7 +258,7 @@ class ProcessQnnExecutor:
         self.model_name = sanitize_name(Path(self.model_path).stem)
         self.model_name_with_pid = f"{self.model_name}_{self.pid}"
 
-        QNNConfig.Config('None', Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
+        QNNConfig.Config(Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
         self.qnn_context = QNNContext(self.model_name_with_pid, model_path, is_async=True)
         PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)
 
@@ -363,9 +361,9 @@ class ProcessQnnExecutor:
             self.child_conn.send(output)
 
     def release(self):
-        del self.qnn_context
+        self.qnn_context.release()
         self.qnn_context = None
-        #gc.collect()
+
 
         self.child_conn.close()
 
@@ -451,7 +449,7 @@ class QnnProcessPool():
             parent_conn, child_conn = Pipe(duplex=True)
 
             process_args = (child_conn, self.model_path, in_shm_name, input_args_list, manager_dict, self.out_info_name)
-            Process_qnn = Process(target=ProcessQnnExecutor, name=process_name, args=process_args)
+            Process_qnn = Process(target=ProcessQnnExecutor, name=process_name, args=process_args, daemon=True)
             Process_qnn.start()
             Process_qnn.pid
 
@@ -612,7 +610,7 @@ class QnnThreadPool():
         self.thread_num = len(self.cores)
         self.thread_pool = None
 
-        self.qnn_proc_list:list|None
+        self.qnn_proc_list:list[QNNContextProc]|None
         self.queue_list:list[Future] = []
 
         self.in_shm_list:list[QNNShareMemory]|None = None
@@ -620,7 +618,7 @@ class QnnThreadPool():
         self.frame_index = 0
 
     def init_qnn(self, input_array_list:list[np.ndarray]) -> tuple[list[QNNContextProc], list[QNNShareMemory]]:
-        QNNConfig.Config('None', Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
+        QNNConfig.Config(Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
     
         model_name = sanitize_name(Path(self.model_path).stem)
         qnn_process_list = []
@@ -704,12 +702,14 @@ class QnnThreadPool():
 
             for i in range(len(self.qnn_proc_list)):
                 qnn_context_proc = self.qnn_proc_list.pop(0)
-                del qnn_context_proc
+                qnn_context_proc.release()
+                #del qnn_context_proc
                 print(f'qnn_context: {i} released')
 
             for i in range((len(self.in_shm_list))):
                 in_shm = self.in_shm_list.pop(0)
-                del in_shm
+                in_shm.release()
+                #del in_shm
 
             # PerfProfile.RelPerfProfileGlobal()
 
