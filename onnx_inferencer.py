@@ -85,4 +85,4 @@ class OnnxExecutor():
             self.input_names.clear()
             self.output_names.clear()
 
-        print("ONNX Executor released")
+            print("ONNX Executor released")
