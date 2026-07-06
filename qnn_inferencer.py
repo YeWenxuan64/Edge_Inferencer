@@ -106,7 +106,10 @@ class QnnExecutor2():
 
         process_name = f"{self.model_name}_proc"
 
-        self.qnn_context_proc = QNNContextProc(self.model_name, process_name, self.model_path)
+        self.qnn_context_proc = QNNContextProc(self.model_name, process_name, self.model_path, is_async=True)
+
+        thread_id = threading.get_native_id()
+        os.sched_setaffinity(thread_id, [4, 5, 6])
         
         total_input_bytes = sum(arr.size * 4 for arr in input_array_list)
         total_output_bytes = count_qnn_output_size(self.qnn_context_proc)
@@ -625,7 +628,7 @@ class QnnThreadPool():
         in_shm_list = []
 
         model_name = Path(self.model_path).stem
-        total_input_bytes = sum(arr.nbytes for arr in input_array_list)
+        total_input_bytes = sum(arr.size * 4 for arr in input_array_list)
 
 
         for i in range(self.thread_num ):
@@ -637,7 +640,7 @@ class QnnThreadPool():
 
             in_shm = QNNShareMemory(f"{process_name}_inshm", total_bytes)
             qnn_process_list.append(qnn_process)
-            self.in_shm_list.append(in_shm)
+            in_shm_list.append(in_shm)
 
 
         PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)
@@ -659,7 +662,7 @@ class QnnThreadPool():
         current_index = self.frame_index
         self.queue_list.append(self.thread_pool.submit(self.qnn_inference, self.qnn_proc_list[current_index], self.in_shm_list[current_index], frame))
 
-        self.frame_index = (self.frame_index + 1) % self.process_num
+        self.frame_index = (self.frame_index + 1) % self.thread_num
 
 
     def put(self, input_data:list[np.ndarray], input_format:str='nhwc', block_all_gets:bool=False) -> None:
