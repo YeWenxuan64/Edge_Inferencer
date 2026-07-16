@@ -66,7 +66,7 @@
 ## 📁 项目结构
 
 ```
-Edge_Inferencer/
+edge_inferencer/
 ├── ai_inferencer.py        # 统一入口：AIInferencer，自动路由
 ├── rknn_inferencer.py      # Rockchip NPU 推理后端
 ├── qnn_inferencer.py       # Qualcomm HTP 推理后端
@@ -84,8 +84,8 @@ Edge_Inferencer/
 ### 🍴 1. 克隆
 
 ```bash
-git clone https://github.com/YeWenxuan64/edge-inferencer.git
-cd Edge_Inferencer
+git clone https://github.com/YeWenxuan64/edge_inferencer.git
+cd edge_inferencer
 ```
 
 ### 🔧 2. 安装依赖
