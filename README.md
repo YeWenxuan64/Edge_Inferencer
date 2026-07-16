@@ -1,11 +1,16 @@
-# Edge_Inferencer
+<div align="center">
+
+# Edge Inferencer | 编译AI推理器
+
 ![madewithlove](https://img.shields.io/badge/made_with-%E2%9D%A4-red?style=for-the-badge&labelColor=pink)
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
-![License](https://img.shields.io/badge/License-MIT-green)
 ![Platform](https://img.shields.io/badge/Platform-Rockchip%20|%20Qualcomm%20|%20x86-orange)
 ![Backend](https://img.shields.io/badge/Backend-RKNN%20|%20QNN%20|%20ONNX-red)
 ![Inference](https://img.shields.io/badge/Mode-Single%20|%20Thread%20Pool%20|%20Process%20Pool-lightgrey)
+![License](https://img.shields.io/badge/License-MIT-green)
+
+</div>
 
 ## 📖 概述
 统一边缘设备推理引擎 —— 一套 Python API，自动适配 Rockchip NPU、Qualcomm HTP 和 ONNX Runtime<br>
@@ -186,34 +191,6 @@ returns:    get():Frame 0  get():Frame 0  get():Frame 1  get():Frame 2
 
 - **视频流实时推理** — 偏移仅造成几帧延迟，通常可忽略，不影响可视化效果
 - **需要帧级对齐的场景**（如逐帧后处理、结果与帧号严格对应）— 需在应用层手动补偿偏移量，或使用单线程 `Executor` 模式（`mult_task=False`）
-
----
-
-### ⚠️ 高通 QAI AppBuilder 并发推理的局限性
-
-QNN 并发推理面临一系列由 `QNNContext` 内部复杂性引发的固有限制：
-
-**根本原因：** 部分 soc(如QCS6490) 的 HTP（DSP）通常不具备多个独立逻辑核心，其"并发"本质上是通过提高运算器（如矩阵乘法累加器）利用率与内存带宽利用率来实现的，而非真正的多核并行。
-
-**Python 端的限制：**
-- `QNNContext` 内部状态复杂，**不支持多线程并发访问**，必须加锁保护
-- 由于 Python GIL 与 QNN 锁的叠加，线程池在 QNN 场景下负收益
-- 因此只能退而求其次，在 **Python 端使用多进程（`multiprocessing`）** 来手动并发
-
-**隐藏的稳定性风险：**
-
-| 风险 | 表现 | 推测原因 |
-|------|------|------|
-| **QNNContext 创建失败** | 进程池初始化时无法创建上下文 | 多进程同时争抢 DSP 资源，HTP 固件资源耗尽<br>~~高通工程师更更爆~~ |
-| **cDSP 内存申请失败** | 推理中途报错、进程异常退出 | DSP 侧共享内存碎片化，多进程各自持有独立上下文导致内存压力倍增<br>~~高通工程师更更爆~~ |
-| **与其他库冲突** | 与opencv库等同时使用时崩溃或卡死 | 多进程争抢同一硬件资源（DSP、CMA 内存池），缺乏全局调度<br>>~~高通工程师更更爆~~ |
-| **轮询开销** | 实际大部分时间耗在轮询多个推理任务而非真实并行计算 | HTP 的核心调度策略是时分复用而非空间并行 |
-
-**其他问题：** 小女子手上的 `Radxa Dragon Q6A` (QCS6490)的 `dsp(HTP)` 可能并非较为完整的神经网络加速器，部分计算需要在CPU端完成，不仅并发性能受限，还影响其他CPU任务<br>(例：在并发时，由于偷用大量CPU资源导致预处理和后处理时间明显拉长，从而拖慢整组并发推理任务)
-
-> **建议：** 若追求稳定性，优先使用**单线程 `QnnExecutor` 模式**（`mult_task=False`），避免多进程带来的资源竞争。仅在性能压力测试或明确知晓硬件余量时，才考虑开启多进程并发。<br>
->
-> 叶姐姐🍃: 不是哥们，你这大高通的soc高出来的性能就被这些奇妙开销给磨掉了，rk恩情还不完✋😭🤚
 
 ---
 
