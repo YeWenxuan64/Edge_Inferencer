@@ -4,5 +4,4 @@ numpy
 opencv-python
 
 # qnn
-# needs to be installed from source
-# https://github.com/quic/ai-engine-direct-helper
+qai-appbuilder

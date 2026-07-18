@@ -10,6 +10,8 @@
 ![Inference](https://img.shields.io/badge/Mode-Single%20|%20Thread%20Pool%20|%20Process%20Pool-lightgrey)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
+⚠️Pre-release Warning⚠️
+
 </div>
 
 ## 📖 概述
@@ -35,8 +37,8 @@
 | 模块 | 说明 |
 |------|------|
 | [`ai_inferencer.py`](./ai_inferencer.py) | 统一入口 `AIInferencer`，自动识别模型类型并路由 |
-| [`rknn_inferencer.py`](./rknn_inferencer.py) | Rockchip NPU 推理：`RknnExecutor`（单线程）/ `RknnThreadPool`（线程池） |
-| [`qnn_inferencer.py`](./qnn_inferencer.py) | Qualcomm HTP 推理：`QnnExecutor`（单线程）/ `QnnProcessPool`（进程池+共享内存） |
+| [`rknn_inferencer.py`](./rknn_inferencer.py) | Rockchip NPU 推理：<br>`RknnExecutor`（单线程）<br>`RknnThreadPool`（线程池） |
+| [`qnn_inferencer.py`](./qnn_inferencer.py) | Qualcomm HTP 推理：<br>`QnnExecutor`（单线程）<br>`QnnProcessPool`（Python进程池+共享内存）<br>`TaskPool`（C++进程的Python池+C++共享内存）（实验性） |
 | [`onnx_inferencer.py`](./onnx_inferencer.py) | ONNX Runtime 推理：`OnnxExecutor`（CPU） |
 
 > **底层 SDK：** Rockchip NPU 使用 **rknn-toolkit-lite2**；Qualcomm HTP 使用 **QAI AppBuilder**（基于 QAIRT SDK）；ONNX 使用 **onnxruntime**。
@@ -57,7 +59,7 @@
     ├────────────┤ ├────────────┤ ├──────────┤
     │ Executor   │ │ Executor   │ │ Executor │
     │ ThreadPool │ │ ProcessPool│ │          │
-    │            │ │            │ │          │
+    │            │ │ TaskPool   │ │          │
     └────────────┘ └────────────┘ └──────────┘
 ```
 
@@ -94,11 +96,14 @@ cd Edge_Inferencer
 
 | 平台 | 命令 |
 |------|------|
-| **Rockchip NPU** (RK3588/RK3576) | `pip install -r requirements_rknn.txt` |
-| **Qualcomm HTP** (QCS6490) | `pip install -r requirements_qnn.txt` + 从源码编译安装 `qai_appbuilder` |
+| **Rockchip NPU** | `pip install -r requirements_rknn.txt` |
+| **Qualcomm HTP** | `pip install -r requirements_qnn.txt` |
 | **ONNX Runtime** (x86 / 通用) | `pip install -r requirements_onnx.txt` |
 
-> ⚠️ QNN 的 `qai_appbuilder` 需从源码编译安装，可参考 [QNN (qai_appbuilder) 编译安装](QNN_INSTALL.md)
+注：<br>
+> 1. ⚠️ 部分NPU接口的 Python 包会在内部写依赖需求，但有可能会胡乱要求某些依赖的最新版本，导致 **Python 环境污染**。若有需要，请手动安装依赖，并使用 `pip install -r requirements.txt --no-deps` 安装本项目依赖
+>
+> 2. QNN 的 `qai_appbuilder` 可以从源码编译安装，可参考 [QNN (qai_appbuilder) 编译安装](QNN_INSTALL.md)
 
 
 ## 🏃 快速开始
@@ -158,7 +163,16 @@ model.release()
 ---
 
 ### ⚠️ 多任务模式帧错位说明
-由于RKNPU和QNN的并发限制。如RKNPU的宣传算力为所有核心的算力之和，且rk3588、rk3576等又是多核心的NPU，所以单NPU核心的算力有限，且确认了在同一个NPU上并发虽不报错是负收益。<br>而在高通HTP上情况则要复杂，为了不报错，只能使用进程隔离。<br>所以只能以帧为单位分发去并发，让提交当前帧任务之后可以立即获取上一帧的结果。
+#### 原因说明：
+
+由于 RKNPU 和 QNN 的并发限制。如 RKNPU 的宣传算力为**所有核心**的算力之和，且 rk3588、rk3576 等又是多核心的 NPU，所以**单 NPU 核心**的算力有限，且确认了在同一个 NPU 上并发虽不报错，但是推理效率是负收益。<br>
+
+而在高通 (NPU)HTP 上情况则要复杂，在**非多 NPU 核心**的 SOC 上在运行多个任务时可以带来效率收益，但需要使用**进程来隔离**多个任务。<br>
+
+所以只能以帧为单位分发去并发，让提交当前帧任务之后可以立即获取**上一帧**的结果。
+
+
+#### 帧错位说明：
 
 `RknnThreadPool` 和 `QNNProcessPool` 的 `put()` / `get()` 存在**固定的帧偏移**，偏移量等于任务数 (`thread_num`)。
 
