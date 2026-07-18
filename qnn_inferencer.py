@@ -92,8 +92,10 @@ class QnnExecutor():
 
 
 class QnnExecutor2():
-    def __init__(self, model_path:str):
+    def __init__(self, model_path:str, performance_cpu_cores:tuple[int]=(4,5,6,7)):
         self.model_path = model_path
+        self.performance_cpu_cores = performance_cpu_cores
+
         self.model_name = sanitize_name(Path(self.model_path).stem)
 
         self.qnn_context_proc = None
@@ -107,7 +109,7 @@ class QnnExecutor2():
         self.qnn_context_proc = QNNContextProc(self.model_name, process_name, self.model_path, is_async=True)
 
         thread_id = threading.get_native_id()
-        os.sched_setaffinity(thread_id, [4, 5, 6])
+        os.sched_setaffinity(thread_id, self.performance_cpu_cores)
         
         total_input_bytes = sum(arr.size * 4 for arr in input_array_list)
         total_output_bytes = count_qnn_output_size(self.qnn_context_proc)
@@ -122,6 +124,9 @@ class QnnExecutor2():
     def put(self, input_data:list[np.ndarray], input_format:str='nhwc') -> list[np.ndarray]|None:
         if self.qnn_context_proc is None:
             self.init_qnn(input_data)
+            child_thread = threading.Thread(name="QNN_Task_Thread", target=self.init_qnn, args=(input_data,), daemon=True)
+            child_thread.start()
+            child_thread.join()
 
         if input_format == 'nhwc':
             pass
@@ -246,15 +251,6 @@ class ProcessQnnExecutor:
         self.manager_dict:DictProxy = manager_dict
         self.out_info_name:str = out_info_name
         self.output_args_list:list|None = None
-
-        self.pid = os.getpid()
-        try:
-            thread_id = threading.get_native_id()
-            cpu_count = os.cpu_count()
-            os.sched_setaffinity(thread_id, tuple(range(cpu_count // 2, cpu_count+1)))
-        except Exception as e:
-            pass
-
 
         self.model_name = sanitize_name(Path(self.model_path).stem)
         self.model_name_with_pid = f"{self.model_name}_{self.pid}"
@@ -412,10 +408,11 @@ class QnnProcessPool():
             return None
 
 
-    def __init__(self, model_path:str, cores:tuple[int] = (0, 1)):
+    def __init__(self, model_path:str, cores:tuple[int]=(0, 1), performance_cpu_cores:tuple[int]=(4,5,6,7)):
         self.model_path = model_path
         self.cores = tuple(cores)
         self.process_num = len(self.cores)
+        self.performance_cpu_cores = performance_cpu_cores
 
         self.model_name = str(Path(self.model_path).stem)
         self.out_info_name = f"{sanitize_name(self.model_name)}_out_shm_info"
@@ -432,10 +429,17 @@ class QnnProcessPool():
         self.inited_process_num = 0
         self.frame_index = 0
 
-    def init_qnn_process(self, input_array_list:list[np.ndarray]) -> None:
-        self.process_list = []
-        self.parent_conn_list = []
-        self.child_conn_list = []
+    @staticmethod
+    def regester_process_cpus(pid:int, cpu_cores:tuple[int]):
+        try:
+            os.sched_setaffinity(pid, cpu_cores)
+        except Exception as e:
+            pass
+
+    def init_qnn_process(self, input_array_list:list[np.ndarray]) -> tuple[list[Process], list[Connection], list[Connection]]:
+        process_list:list[Process] = []
+        parent_conn_list:list[Connection] = []
+        child_conn_list:list[Connection] = []
 
         # 创建 NumPy 视图列表,供子进程推理时使用
         self.shared_input_memory, input_args_list = create_shared_memory(input_array_list)
@@ -452,7 +456,6 @@ class QnnProcessPool():
             process_args = (child_conn, self.model_path, in_shm_name, input_args_list, manager_dict, self.out_info_name)
             Process_qnn = Process(target=ProcessQnnExecutor, name=process_name, args=process_args, daemon=True)
             Process_qnn.start()
-            Process_qnn.pid
 
             atexit.register(Process_qnn.kill)
 
@@ -460,6 +463,7 @@ class QnnProcessPool():
             self.parent_conn_list.append(parent_conn)
             self.child_conn_list.append(child_conn)
 
+        return process_list, parent_conn_list, child_conn_list
 
     def queue_put(self) -> None:
         """向子进程发送推理信号,只发送 True
@@ -484,11 +488,15 @@ class QnnProcessPool():
 
 
         if self.process_list is None:
-            self.init_qnn_process(input_data)
-            
+            self.process_list, self.parent_conn_list, self.child_conn_list = self.init_qnn_process(input_data)
+
             for i in range(self.process_num):
                 self.queue_put()
                 self.inited_process_num += 1
+
+            for i in range(self.process_num):
+                pid = self.process_list[i].pid
+                self.regester_process_cpus(pid, self.performance_cpu_cores)
 
         else:
             self.queue_put()
@@ -592,8 +600,8 @@ class QnnProcessPool():
 
 
 class QnnExecutor3(QnnProcessPool):
-    def __init__(self, model_path:str):
-        super().__init__(model_path, cores=(0,))
+    def __init__(self, model_path:str, performance_cpu_cores:tuple[int]=(4,5,6,7)):
+        super().__init__(model_path, cores=(0,), performance_cpu_cores=performance_cpu_cores)
 
     def put(self, input_data:list[np.ndarray], input_format:str='nhwc') -> list[np.ndarray]|None:
         super().put(input_data, input_format)
@@ -603,9 +611,10 @@ class QnnExecutor3(QnnProcessPool):
 
 
 class QnnTaskPool():
-    def __init__(self, model_path:str, cores:tuple[int]=(0, 1)):
+    def __init__(self, model_path:str, cores:tuple[int]=(0, 1), performance_cpu_cores:tuple[int]=(4,5,6,7)):
         self.model_path = model_path
         self.cores = cores
+        self.performance_cpu_cores = performance_cpu_cores
 
         self.task_num = len(self.cores)
         self.frame_index = 0
@@ -618,7 +627,7 @@ class QnnTaskPool():
 
     def init_qnn(self, input_array_list:list[np.ndarray]) -> tuple[list[QNNContextProc], list[QNNShareMemory]]:
         thread_id = threading.get_native_id()
-        os.sched_setaffinity(thread_id, [4, 5, 6, ])
+        os.sched_setaffinity(thread_id, self.performance_cpu_cores)
 
         QNNConfig.Config(Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
     
