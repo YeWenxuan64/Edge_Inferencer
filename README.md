@@ -1,6 +1,6 @@
 <div align="center">
 
-# Edge Inferencer | 编译AI推理器
+# Edge Inferencer | 边缘AI推理器
 
 ![madewithlove](https://img.shields.io/badge/made_with-%E2%9D%A4-red?style=for-the-badge&labelColor=pink)
 
@@ -163,7 +163,7 @@ model.release()
 ---
 
 ### ⚠️ 多任务模式帧错位说明
-#### 原因说明：
+#### 💡 原因说明：
 
 由于 RKNPU 和 QNN 的并发限制。如 RKNPU 的宣传算力为**所有核心**的算力之和，且 rk3588、rk3576 等又是多核心的 NPU，所以**单 NPU 核心**的算力有限，且确认了在同一个 NPU 上并发虽不报错，但是推理效率是负收益。<br>
 
@@ -172,7 +172,7 @@ model.release()
 所以只能以帧为单位分发去并发，让提交当前帧任务之后可以立即获取**上一帧**的结果。
 
 
-#### 帧错位说明：
+#### 🔄 帧错位说明：
 
 `RknnThreadPool` 和 `QNNProcessPool` 的 `put()` / `get()` 存在**固定的帧偏移**，偏移量等于任务数 (`thread_num`)。
 
@@ -404,6 +404,10 @@ model.release()
 - **QNN 进程池使用共享内存** — 自动管理创建与清理，正常退出时自动释放
 - **NCHW 输入** — 后端会自动转置为 NHWC（RKNN/QNN）或保持 NCHW（ONNX）
 
+
+## 📚 Reference
+
+[leafqycc/rknn-multi-threaded](https://github.com/leafqycc/rknn-multi-threaded)
 
 ## 📄 License
 
