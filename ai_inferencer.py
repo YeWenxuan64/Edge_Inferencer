@@ -18,54 +18,6 @@ class temporary_sys_path:
         if self.new_path in sys.path:
             sys.path.remove(self.new_path)
 
-def check_arm_cpu_cores() -> tuple[list[int], list[int]]|None:
-    """
-    Check if the current system is Linux and ARM, and return the number of CPU cores.
-    """
-    import platform
-
-    system = platform.system().lower()
-    machine = platform.machine().lower()
-
-    # 1. 判断是否为 Linux 系统, 判断是否为 ARM 架构
-    if system != "linux" or machine not in ("aarch64", "arm64", "armv7l", "armv6l"):
-        return None
-
-    # 2. 读取每个 CPU 核心的 capacity，高者为性能核
-    cpu_capacities: dict[int, int] = {}
-    cpu_dir = Path("/sys/devices/system/cpu")
-
-    for cpu_path in sorted(cpu_dir.glob("cpu[0-9]*")):
-        core_id_str = cpu_path.name[3:]  # 提取 "cpu0" -> "0"
-        if not core_id_str.isdigit():
-            continue
-
-        core_id = int(core_id_str)
-
-        capacity_file = cpu_path / "cpu_capacity"
-        if capacity_file.exists():
-            try:
-                capacity = int(capacity_file.read_text().strip())
-                cpu_capacities[core_id] = capacity
-            except (ValueError, OSError):
-                pass
-
-    if not cpu_capacities:
-        return None
-
-    # 3. 按 capacity 分组：高者为性能核，低者为效率核
-    min_capacity = min(cpu_capacities.values())
-    efficiency_cores_list:list[int] = []
-    performance_cores_list:list[int] = []
-
-    for core_id, cap in cpu_capacities.items():
-        if cap > min_capacity:
-            performance_cores_list.append(core_id)
-        else:
-            efficiency_cores_list.append(core_id)
-
-    return (efficiency_cores_list, performance_cores_list)
-
 
 class EmptyAIInferencer:
     def __init__(self):
@@ -82,11 +34,6 @@ class EmptyAIInferencer:
 
 
 class AIInferencer:
-    arm_cores = check_arm_cpu_cores()
-    performance_cpu_cores = (4, 5, 6, 7)
-    if arm_cores is not None:
-        efficiency_cpu_cores, performance_cpu_cores = arm_cores
-
     def __init__(self, model_path:str|None, cores:tuple[int]=(0,), mult_task:bool=False):
         """
         args:
@@ -151,12 +98,12 @@ class AIInferencer:
                 import qnn_inferencer as qnn_infer
 
             if self.mult_task:
-                #self.inferfacer = qnn_infer.QnnProcessPool(self.model_path, self.cores, self.performance_cpu_cores)
-                self.inferfacer = qnn_infer.QnnTaskPool(self.model_path, self.cores, self.performance_cpu_cores)
+                self.inferfacer = qnn_infer.QnnProcessPool(self.model_path, self.cores)
+                #self.inferfacer = qnn_infer.QnnTaskPool(self.model_path, self.cores)
             else:
                 self.inferfacer = qnn_infer.QnnExecutor(self.model_path)
-                # self.inferfacer = qnn_infer.QnnExecutor2(self.model_path, self.performance_cpu_cores)
-                # self.inferfacer = qnn_infer.QnnExecutor3(self.model_path, self.performance_cpu_cores)
+                #self.inferfacer = qnn_infer.QnnTaskExecutor(self.model_path)
+                #self.inferfacer = qnn_infer.QnnExecutor3(self.model_path)
 
         elif self.model_type == 'onnx':
             with temporary_sys_path(CURRENT_DIR):
