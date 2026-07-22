@@ -1,4 +1,51 @@
+# Python
 __pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
 
+# Virtual environments
+.venv/
+.venv*/
+venv/
+venv*/
 
-*.pyc
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.coverage
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.*
+
+# Shared memory (runtime artifacts)
+/dev/shm/*
+
+# Model files (large binaries — download, don't track)
+*.rknn
+*.onnx
+*.bin
+*.param
+*.model
