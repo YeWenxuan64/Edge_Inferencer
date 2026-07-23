@@ -4,9 +4,12 @@ from rknnlite.api import RKNNLite
 from concurrent.futures import ThreadPoolExecutor, Future
 
 class RknnExecutor():
-    def __init__(self, model_path:str, cores:tuple=(0,)):
+    def __init__(self, model_path:str, cores:tuple|int=0):
         self.model_path = model_path
-        self.core = cores[0]
+        if isinstance(cores, int):
+            self.core = cores
+        else:
+            self.core = cores[0]
 
         self.rknn_lite = None
 
@@ -27,6 +30,19 @@ class RknnExecutor():
         self.rknn_lite = rknn_lite
     
     def put(self, input_data:list[np.ndarray], input_format:str='nhwc') -> list[np.ndarray]|None:
+        """
+        Inference with blocking.
+
+        Args:
+            input_data: a list of ndarrays
+            input_format: 'nhwc' or 'nchw'
+                - input_tensor should [n, h, w, c] or [n, c, h, w].
+                - recommended [n, h, w, c].
+
+        Returns:
+            a list of ndarrays
+        """
+
         if self.rknn_lite is None:
             self.init_rknn()
 
@@ -58,7 +74,7 @@ class RknnThreadPool():
         
         self.frame_index = 0
 
-    def init_rknn(self) -> list[RKNNLite]:
+    def init_rknn_lite_threadpool(self) -> tuple[ThreadPoolExecutor, list[RKNNLite]]:
         rknn_list = []
 
         for core in self.cores:
@@ -77,7 +93,9 @@ class RknnThreadPool():
             rknn_lite.init_runtime(core_mask=mask)
             rknn_list.append(rknn_lite)
 
-        return rknn_list
+        thread_pool = ThreadPoolExecutor(max_workers=self.thread_num, thread_name_prefix='rknn_thread_pool')
+
+        return thread_pool, rknn_list
 
     @staticmethod
     def rknn_inference(rknn_lite:RKNNLite, input_list:list[np.ndarray]) -> list[np.ndarray]|None:
@@ -100,14 +118,23 @@ class RknnThreadPool():
             self.frame_index += 1
 
     def put(self, input_data:list[np.ndarray], input_format:str='nhwc') -> None:
+        """
+        Inference without blocking.
+        
+        Args:
+            input_data: a list of ndarrays
+            input_format: 'nhwc' or 'nchw'
+                - input_tensor should [n, h, w, c] or [n, c, h, w].
+                - recommended [n, h, w, c].
+        """
+        
         if input_format == 'nhwc':
             pass
         elif input_format == 'nchw':
             input_data = [np.transpose(input_tensor, (0, 2, 3, 1)) for input_tensor in input_data] # NCHW -> NHWC
     
         if self.thread_pool is None:
-            self.thread_pool = ThreadPoolExecutor(max_workers=self.thread_num, thread_name_prefix='rknn thread pool')
-            self.rknn_list = self.init_rknn()
+            self.thread_pool, self.rknn_list = self.init_rknn_lite_threadpool()
             
             for i, core in enumerate(self.cores):
                 self.queue_put(input_data, allow_drop=False)
@@ -137,20 +164,21 @@ class RknnThreadPool():
 
     def release(self) -> bool:
         ret = False
-        if self.thread_pool is not None:
-            self.thread_pool.shutdown()
-            ret = True
-            # for i in range(len(self.queue)):
-            #     future = self.queue.popleft()
-            #     future.cancel()
-            for i in range(len(self.queue_list)):
-                future = self.queue_list.pop(0)
-                future.cancel()
 
-            for i in range(len(self.rknn_list)):
-                rknn_lite = self.rknn_list.pop(0)
+        if self.thread_pool is not None:
+            for future in self.queue_list:
+                future.cancel()
+            self.queue_list.clear()
+
+            self.thread_pool.shutdown(wait=True, cancel_futures=True)
+
+            for i, rknn_lite in enumerate(self.rknn_list):
                 rknn_lite.release()
                 print(f'rknnlite: {i} released')
+            self.rknn_list.clear()
+
+            ret = True
 
         self.thread_pool = None
+        self.frame_index = 0
         return ret

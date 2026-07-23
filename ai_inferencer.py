@@ -109,7 +109,10 @@ class AIInferencer:
             with temporary_sys_path(CURRENT_DIR):
                 import onnx_inferencer as onnx_infer
 
-            self.inferfacer = onnx_infer.OnnxExecutor(self.model_path)
+            if self.mult_task:
+                self.inferfacer = onnx_infer.OnnxThreadPool(self.model_path, self.cores)
+            else:
+                self.inferfacer = onnx_infer.OnnxExecutor(self.model_path)
     
     def release(self) -> bool:
         ret = self.inferfacer.release()

@@ -454,10 +454,15 @@ class QnnProcessPool():
             return None
 
 
-    def __init__(self, model_path:str, cores:tuple[int]=(0, 1)):
+    def __init__(self, model_path:str, task_num_or_cores:int|tuple[int]=2):
         self.model_path = model_path
-        self.cores = tuple(cores)
-        self.process_num = len(self.cores)
+        self.task_num_or_cores = task_num_or_cores
+
+        if isinstance(task_num_or_cores, int):
+            self.process_num = task_num_or_cores
+        else:
+            self.process_num = len(task_num_or_cores)
+
 
         self.model_name = str(Path(self.model_path).stem)
         self.out_info_name = f"{sanitize_name(self.model_name)}_out_shm_info"
@@ -585,17 +590,18 @@ class QnnProcessPool():
         """
         释放所有资源,包括进程池、共享内存和 Manager
         """
+        ret = False
 
         if self.parent_conn_list is not None:
             for parent_conn in self.parent_conn_list:
                 parent_conn.send(False)
 
         if self.process_list is not None:
-            for i in range(len(self.process_list)):
-                Process_qnn = self.process_list.pop(0)
+            for Process_qnn in self.process_list:
                 Process_qnn.join()
+            self.process_list.clear()
             self.process_list = None
-
+            ret = True
 
         if self.child_conn_list is not None:
             for child_conn in self.child_conn_list:
@@ -630,12 +636,12 @@ class QnnProcessPool():
         self.frame_index = 0
         self.inited_process_num = 0 
 
-        return True 
+        return ret 
 
 
 class QnnExecutor3(QnnProcessPool):
     def __init__(self, model_path:str):
-        super().__init__(model_path, cores=(0,))
+        super().__init__(model_path, task_num_or_cores=1)
 
     def put(self, input_data:list[np.ndarray], input_format:str='nhwc') -> list[np.ndarray]|None:
         super().put(input_data, input_format)
@@ -647,18 +653,22 @@ class QnnExecutor3(QnnProcessPool):
 class QnnTaskPool():
     perf_cpu_cores = check_arm_perf_cores()
 
-    def __init__(self, model_path:str, cores:tuple[int]=(0, 1)):
+    def __init__(self, model_path:str, task_num_or_cores:int|tuple[int]=2):
         self.model_path = model_path
-        self.cores = cores
+        self.task_num_or_cores = task_num_or_cores
 
-        self.task_num = len(self.cores)
-        self.frame_index = 0
+        if isinstance(task_num_or_cores, int):
+            self.task_num = task_num_or_cores
+        else:
+            self.task_num = len(task_num_or_cores)
 
+        
         self.child_thread:threading.Thread|None = None
         self.qnn_proc_list:list[QNNContextProc]|None = None
         self.qnn_shm_list:list[QNNShareMemory]|None = None
 
         self.queue_list:list[tuple[int, str]] = []
+        self.frame_index = 0
 
     def init_qnn(self, input_array_list:list[np.ndarray]) -> tuple[list[QNNContextProc], list[QNNShareMemory]]:
         set_cpu_affinity(self.perf_cpu_cores)
@@ -714,9 +724,9 @@ class QnnTaskPool():
             #self.qnn_proc_list, self.qnn_shm_list = self.init_qnn(input_data)
             
             if block_all_gets is False:
-                for i, core in enumerate(self.cores):
+                for i in range(self.task_num):
                     self.queue_put(input_data)
-                    print(f'QNN task: {core}, thread: {i}')
+                    print(f'QNN task: {i}, thread: {i}')
             else:
                 self.queue_put(input_data)
         else:
@@ -740,18 +750,21 @@ class QnnTaskPool():
 
         return result_list
 
-    def release(self) -> None:
+    def release(self) -> bool:
+        ret = False
+
         if self.qnn_proc_list is not None:
-            for i in range(len(self.qnn_proc_list)):
-                qnn_context_proc = self.qnn_proc_list.pop(0)
+            for i, qnn_context_proc in enumerate(self.qnn_proc_list):
                 qnn_context_proc.release()
-  
                 print(f'qnn_context task: {i} released')
+            self.qnn_proc_list.clear()
+            ret = True
 
         if self.qnn_shm_list is not None:
-            for i in range((len(self.qnn_shm_list))):
-                in_shm = self.qnn_shm_list.pop(0)
+            for in_shm in self.qnn_shm_list:
                 in_shm.release()
+            self.qnn_shm_list.clear()
+            # PerfProfile.RelPerfProfileGlobal()
 
         self.qnn_proc_list = None
         self.qnn_shm_list = None
@@ -760,7 +773,7 @@ class QnnTaskPool():
         self.frame_index = 0
         self.child_thread = None
 
-            # PerfProfile.RelPerfProfileGlobal()
+        return ret
 
 
 
