@@ -4,11 +4,13 @@
 
 ![madewithlove](https://img.shields.io/badge/made_with-%E2%9D%A4-red?style=for-the-badge&labelColor=pink)
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
-![Platform](https://img.shields.io/badge/Platform-Rockchip%20|%20Qualcomm%20|%20x86-orange)
-![Backend](https://img.shields.io/badge/Backend-RKNN%20|%20QNN%20|%20ONNX-red)
-![Inference](https://img.shields.io/badge/Mode-Single%20|%20Thread%20Pool%20|%20Process%20Pool-lightgrey)
-![License](https://img.shields.io/badge/License-MIT-green)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://www.python.org/)
+![Platform](https://img.shields.io/badge/Platform-Rockchip%20|%20Qualcomm%20|%20x86-blue)
+[![RKNN](https://img.shields.io/badge/Backend-RKNN-EC6F16)](https://github.com/rockchip-linux/rknpu2)
+[![QNN](https://img.shields.io/badge/Backend-QNN%20(HTP)-31017D?logo=qualcomm)](https://www.qualcomm.com/developer/software/qualcomm-ai-engine-direct-sdk)
+[![ONNX](https://img.shields.io/badge/Backend-QNNX-005CED?logo=onnx)](https://onnx.ai/)
+![Inference](https://img.shields.io/badge/Mode-Single%20|%20Thread%20Pool%20|%20Process%20Pool-blueviolet)
+[![License](https://img.shields.io/badge/License-MIT-brightgreen)](LICENSE)
 
 ⚠️Pre-release Warning⚠️
 
@@ -30,7 +32,7 @@
 - **多核 NPU 支持** — 指定 NPU 核心 (Core 0/1/2/ALL)，线程池/进程池自动轮询分发
 - **格式自动转换** — 支持 NHWC / NCHW 输入，后端自动处理维度转置
 - **延迟初始化** — 首次 `put()` 时才加载模型，减少启动开销
-- **易于集成** — 三行代码接入自有项目，作为 [Focus-Finder](https://github.com/YeWenxuan64/Focus-Finder) 的推理后端
+- **易于集成** — 三行代码接入自有项目，比如作为 [Focus-Finder](https://github.com/YeWenxuan64/Focus-Finder) 的推理后端
 
 
 
@@ -225,9 +227,9 @@ AIInferencer(model_path: str, cores: tuple[int] = (0,), mult_task: bool = False)
 | `cores` | `tuple[int]` | `(0,)` | NPU 核心编号，支持 `0`/`1`/`2`/`-1`(ALL) |
 | `mult_task` | `bool` | `False` | 是否启用线程池/进程池并发模式 |
 
-**方法：**
+**方法（函数）：**
 
-| 方法 | 签名 | 说明 |
+| 方法（函数） | 签名（变量） | 说明 |
 |------|------|------|
 | `put()` | `put(input_data: list[np.ndarray], input_format: str = 'nhwc')` | 提交推理输入，返回结果（单线程）或 `None`（并发模式） |
 | `get()` | `get(block: bool = True)` | 获取推理结果（并发模式），`block=False` 非阻塞 |
@@ -237,9 +239,9 @@ AIInferencer(model_path: str, cores: tuple[int] = (0,), mult_task: bool = False)
 
 | 后缀 | 后端 | 平台 |
 |------|------|------|
-| `.rknn` | RKNN Lite | Rockchip NPU (RK3588/RK3576/RK3566) |
-| `.bin` | QAIRT | Qualcomm HTP (QCS6490 QCS8550 QCS9075) |
-| `.onnx` | ONNX Runtime | CPU (通用) |
+| `.rknn` | RKNN Lite | Rockchip NPU<br>(RK3588/RK3576/RK3566...) |
+| `.bin` | QAIRT | Qualcomm HTP<br>(QCS6490/QCS8550/QCS9075...) |
+| `.onnx` | ONNX Runtime | CPU (General) |
 
 ---
 
@@ -374,7 +376,7 @@ model.release()
 ```python
 from ai_inferencer import AIInferencer
 
-model_path = "path/to/your/model.rknn"
+model_path = "path/to/your/model.rknn" # "path/to/your/model.bin"
 
 # 双核并发，交替使用 Core 0 和 Core 1
 model = AIInferencer(
