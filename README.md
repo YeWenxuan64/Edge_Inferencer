@@ -41,7 +41,7 @@
 | [`ai_inferencer.py`](./ai_inferencer.py) | 统一入口 `AIInferencer`，自动识别模型类型并路由 |
 | [`rknn_inferencer.py`](./rknn_inferencer.py) | Rockchip NPU 推理：<br>`RknnExecutor`（单线程）<br>`RknnThreadPool`（线程池） |
 | [`qnn_inferencer.py`](./qnn_inferencer.py) | Qualcomm HTP 推理：<br>`QnnExecutor`（单线程）<br>`QnnProcessPool`（Python进程池+共享内存）<br>`TaskPool`（C++进程的Python池+C++共享内存）（实验性） |
-| [`onnx_inferencer.py`](./onnx_inferencer.py) | ONNX Runtime 推理：`OnnxExecutor`（CPU） |
+| [`onnx_inferencer.py`](./onnx_inferencer.py) | ONNX Runtime 推理：<br>`OnnxExecutor`（单线程）<br>`OnnxThreadPool`（线程池） |
 
 > **底层 SDK：** Rockchip NPU 使用 **rknn-toolkit-lite2**；Qualcomm HTP 使用 **QAI AppBuilder**（基于 QAIRT SDK）；ONNX 使用 **onnxruntime**。
 
@@ -270,13 +270,13 @@ pool.release()
 Qualcomm HTP 推理后端。
 
 ```python
-# 单线程
+# 单线程(进程)
 from qnn_inferencer import QnnExecutor
 executor = QnnExecutor(model_path='model.bin')
 result = executor.put(input_data, input_format='nhwc')
 executor.release()
 
-# 进程池（共享内存零拷贝，绕过 GIL）
+# 进程池（共享内存"一"拷贝，绕过 GIL）
 from qnn_inferencer import QnnProcessPool
 pool = QnnProcessPool(model_path='model.bin', cores=(0, 1))
 pool.put(input_data)
@@ -285,19 +285,24 @@ pool.release()
 ```
 
 
-### `OnnxExecutor`
+### `OnnxExecutor` / `OnnxThreadPool`
 
 ONNX Runtime CPU 推理后端 (用于在转换为 onnx 模型后进行测试用)。
 
 ```python
+# 单线程
 from onnx_inferencer import OnnxExecutor
-
 executor = OnnxExecutor(model_path='model.onnx')
 executor.set_providers(['CPUExecutionProvider'])  # 可选：指定执行提供者
-
 result = executor.put(input_data, input_format='nhwc')
-
 executor.release()
+
+# 线程池
+from onnx_inferencer import OnnxThreadPool
+pool = OnnxThreadPool(model_path='model.onnx', task_num_or_cores=2)
+pool.put(input_data, input_format='nhwc')
+result = pool.get(block=True)
+pool.release()
 ```
 
 ---

@@ -7,9 +7,12 @@ import threading
 from pathlib import Path
 
 from multiprocessing.connection import Connection
-from multiprocessing.managers import SyncManager, DictProxy
-from multiprocessing import Process, Pipe, Manager
+from multiprocessing.sharedctypes import SynchronizedArray
+from multiprocessing import Process, Pipe, Array
 from multiprocessing.shared_memory import SharedMemory
+
+import pickle
+import struct
 
 
 
@@ -252,7 +255,10 @@ def get_shared_memory_view(shm:SharedMemory, shm_args_list:list[tuple[tuple[int]
     return shared_memory_views
 
 def create_shared_memory(array_list:list[np.ndarray]) -> tuple[SharedMemory, list[tuple[tuple[int,], np.dtype, tuple[int, int]]]]:
-    """仅创建共享内存块并返回 (shm, args_list),不写入数据调用方需自行 copy_listarray"""
+    """
+    创建共享内存块并返回 (shm, args_list),
+    不写入数据调用方需自行 copy_listarray
+    """
     shared_memory:SharedMemory|None = None
     shm_args_list:list[tuple[tuple[int,], np.dtype, tuple[int, int]]] = []
     total_byte_size:int = 0
@@ -277,22 +283,51 @@ def create_shared_memory(array_list:list[np.ndarray]) -> tuple[SharedMemory, lis
     return shared_memory, shm_args_list
 
 
+def read_shard_info(shared_array:SynchronizedArray) -> tuple|None:
+    """
+    从 SynchronizedArray 反 pickle 读取共享信息
+    数组布局：[4字节: 长度头(int32网络序)][length字节: pickle序列化数据]
+    length=0 或负值表示未写入，返回 None
+    """
+    with shared_array.get_lock():
+        header_ints = shared_array[:4]
+        length = struct.unpack('!i', bytes(header_ints))[0]
+        if length <= 0:
+            return None
+        pickled_data = bytes(shared_array[4:4 + length])
+
+    try:
+        return pickle.loads(pickled_data)
+    except Exception:
+        return None
+
+def write_shard_info(shared_array:SynchronizedArray, info_to_share:tuple) -> None:
+    """
+    将 info_to_share pickle 序列化后写入 SynchronizedArray
+    数组布局：[4字节: 长度头(int32网络序)][length字节: pickle序列化数据]
+    使用 Array 内部锁保证原子性
+    """
+    pickled_data = pickle.dumps(info_to_share)
+    length = len(pickled_data)
+
+    if length > len(shared_array) - 4:
+        print(f"Error: pickled info too large ({length} > {len(shared_array) - 4})")
+        return
+
+    header = struct.pack('!i', length)
+    with shared_array.get_lock():
+        shared_array[:4] = header
+        shared_array[4:4 + length] = pickled_data
+
 
 class ProcessQnnExecutor:
-    """Pipe 版子进程执行器：用 child_conn 收信号，child_conn 返结果
-
-    manager_dict: multiprocessing.Manager().dict() 代理 —— 子进程可读写
-    - 读取：查找已注册的 out_shm 名称及 output_args_list
-    - 写入：首次创建 out_shm 时直接注册到 manager_dict（无需经主进程中转）
-    """
     perf_cpu_cores = check_arm_perf_cores()
 
-    def __init__(self, child_conn, model_path, in_shm_name:str, input_args_list:list, manager_dict, out_info_name):
+    def __init__(self, child_conn, model_path, in_shm_name:str, input_args_list:list, out_shared_info:SynchronizedArray):
         self.child_conn:Connection = child_conn
         self.model_path:str = model_path
 
-        self.manager_dict:DictProxy = manager_dict
-        self.out_info_name:str = out_info_name
+        self.out_shared_info = out_shared_info
         self.output_args_list:list|None = None
 
         self.pid = os.getpid()
@@ -324,15 +359,12 @@ class ProcessQnnExecutor:
         self.release()
 
     def lookup_out_shm(self) -> bool:
-        """从 manager_dict 查找已注册的 out_shm
-        找到则打开（或复用）并恢复 output_args_list，返回 True；未找到返回 False
         """
-        try:
-            out_shm_info = self.manager_dict.get(self.out_info_name)
-        except Exception:
-            return False
-
-        if not out_shm_info:
+        从 out_shared_info 反 pickle 查找已注册的 out_shm
+        找到则打开（或复用）并恢复 output_args_list, 返回 True, 未找到返回 False
+        """
+        out_shm_info = read_shard_info(self.out_shared_info)
+        if out_shm_info is None:
             return False
 
         out_shm_name, stored_args = out_shm_info
@@ -355,15 +387,14 @@ class ProcessQnnExecutor:
         self.output_args_list = stored_args
         return True
 
-    def register_out_shm_to_manager(self, out_shm:SharedMemory, output_args_list:list) -> None:
-        """将当前 out_shm 及 output_args_list 注册到 manager_dict
+    def register_out_shm(self, out_shm:SharedMemory, output_args_list:list) -> None:
+        """
+        将当前 out_shm.name 及 output_args_list pickle 序列化到 out_shared_info
         子进程在首次创建 out_shm 时调用，使主进程和其他子进程可发现
-        dtype 序列化为字符串以确保跨进程兼容
-        使用单键元组写入，保证原子性
         """
         serializable_args = [(shape, str(dtype), offset_range)
                              for shape, dtype, offset_range in output_args_list]
-        self.manager_dict[self.out_info_name] = (out_shm.name, serializable_args)
+        write_shard_info(self.out_shared_info, (out_shm.name, serializable_args))
 
     def run(self):
         while True:
@@ -385,13 +416,13 @@ class ProcessQnnExecutor:
 
             if output_list:
                 if self.output_array_list is None:
-                    # 尝试从 Manager 查找已有的 out_shm（其他子进程可能已创建）
+                    # 尝试从 out_shared_info 查找已有的 out_shm（其他子进程可能已创建）
                     if self.lookup_out_shm():
                         pass
                     else:
-                        # 首个完成的子进程：创建 out_shm，注册到 manager
+                        # 首个完成的子进程：创建 out_shm，注册到 Array
                         self.out_shm, self.output_args_list = create_shared_memory(output_list)
-                        self.register_out_shm_to_manager(self.out_shm, self.output_args_list)
+                        self.register_out_shm(self.out_shm, self.output_args_list)
 
                     self.output_array_list = get_shared_memory_view(self.out_shm, self.output_args_list)
 
@@ -428,31 +459,7 @@ class ProcessQnnExecutor:
         exit(0)
 
 class QnnProcessPool():
-    instance_num = 0
-    manager:SyncManager|None = None
-    manager_dict:DictProxy|None = None
-
-    @classmethod
-    def manage_dict_manager(cls, release:bool=False) -> DictProxy|None:
-        if not release:
-            if cls.manager is None:
-                cls.manager = Manager()
-                cls.manager_dict = cls.manager.dict()
-
-            cls.instance_num += 1
-            return cls.manager_dict
-        
-        else:
-            cls.instance_num -= 1
-
-            if cls.manager is not None and cls.instance_num <= 0:
-                cls.manager.shutdown()
-                cls.manager = None
-                cls.manager_dict = None
-                print("QnnProcessPool manager_dict released")
-
-            return None
-
+    out_shm_data_size = 4096  # 足够容纳 pickle 序列化后的 out_shm 信息
 
     def __init__(self, model_path:str, task_num_or_cores:int|tuple[int]=2):
         self.model_path = model_path
@@ -465,7 +472,6 @@ class QnnProcessPool():
 
 
         self.model_name = str(Path(self.model_path).stem)
-        self.out_info_name = f"{sanitize_name(self.model_name)}_out_shm_info"
 
         self.process_list:list[Process]|None = None
         self.parent_conn_list:list[Connection]|None = None
@@ -475,6 +481,8 @@ class QnnProcessPool():
         self.shared_output_memory:SharedMemory|None = None
         self.input_array_list:list[np.ndarray]|None = None
         self.output_array_list:list[np.ndarray]|None = None
+
+        self.out_shared_info = None  # multiprocessing.Array('B') — 共享的 pickle 序列化 out_shm 信息
 
         self.inited_process_num = 0
         self.frame_index = 0
@@ -489,18 +497,19 @@ class QnnProcessPool():
         self.input_array_list = get_shared_memory_view(self.shared_input_memory, input_args_list)
         copy_listarray(input_array_list, self.input_array_list) # 将输入数据复制到共享内存
 
-        manager_dict = self.manage_dict_manager()
+        # 创建共享 Array 用于跨进程传递 out_shm 信息（替代 Manager）
+        self.out_shared_info = Array('B', self.out_shm_data_size)
         in_shm_name = self.shared_input_memory.name
 
         for i in range(self.process_num):
             process_name = f"{self.model_name}_QNN_process_{i}"
             parent_conn, child_conn = Pipe(duplex=True)
 
-            process_args = (child_conn, self.model_path, in_shm_name, input_args_list, manager_dict, self.out_info_name)
-            Process_qnn = Process(target=ProcessQnnExecutor, name=process_name, args=process_args, daemon=True)
+            process_args = (child_conn, self.model_path, in_shm_name, input_args_list, self.out_shared_info)
+            Process_qnn = Process(target=ProcessQnnExecutor, name=process_name, args=process_args)
             Process_qnn.start()
 
-            atexit.register(Process_qnn.kill)
+            atexit.register(Process_qnn.terminate)
 
             process_list.append(Process_qnn)
             parent_conn_list.append(parent_conn)
@@ -510,7 +519,7 @@ class QnnProcessPool():
 
     def queue_put(self) -> None:
         """向子进程发送推理信号,只发送 True
-        子进程自行从 manager_dict 查找 out_shm
+        子进程自行从 out_shared_info 查找 out_shm
         """
         idx = self.frame_index
         self.parent_conn_list[idx].send(True)
@@ -535,7 +544,6 @@ class QnnProcessPool():
 
             for i in range(self.process_num):
                 self.queue_put()
-                self.inited_process_num += 1
 
         else:
             self.queue_put()
@@ -544,10 +552,10 @@ class QnnProcessPool():
         """从子进程获取推理结果
 
         子进程回复 True(有结果)或 None(推理失败)
-        主进程按需从 manager_dict 懒加载 output_array_list:
-        - 首次(output_array_list 为 None)→ 查 manager_dict,有则创建视图并返回独立副本
+        主进程按需从 out_shared_info 反 pickle 懒加载 output_array_list:
+        - 首次(output_array_list 为 None)→ 反 pickle out_shared_info,有则创建视图并返回独立副本
         - 后续 → 直接返回零拷贝视图(子进程已写入)
-        - manager_dict 无 out_shm 信息 → 返回 None
+        - out_shared_info 无 out_shm 信息 → 返回 None
         """
         if not self.process_list:
             return None
@@ -565,8 +573,8 @@ class QnnProcessPool():
 
         output_list = None
         if self.output_array_list is None:
-            # 首次：从 manager_dict 查找并创建 output_array_list
-            out_shm_info = self.manager_dict.get(self.out_info_name)
+            # 首次：从 out_shared_info 反 pickle 查找并创建 output_array_list
+            out_shm_info = read_shard_info(self.out_shared_info)
 
             if out_shm_info is not None:
                 out_shm_name, output_args_list = out_shm_info
@@ -581,6 +589,7 @@ class QnnProcessPool():
 
         if self.inited_process_num <= self.process_num and output_list:
             # 首轮返回独立副本，避免调用方意外修改共享内存
+            self.inited_process_num += 1
             output_list = [array.copy() for array in output_list]
 
         return output_list
@@ -588,7 +597,7 @@ class QnnProcessPool():
 
     def release(self) -> bool:
         """
-        释放所有资源,包括进程池、共享内存和 Manager
+        释放所有资源,包括进程池、共享内存和 out_shared_info
         """
         ret = False
 
@@ -631,7 +640,8 @@ class QnnProcessPool():
         self.shared_input_memory = None
         self.shared_output_memory = None
 
-        self.manage_dict_manager(release=True)
+        del self.out_shared_info
+        self.out_shared_info = None
 
         self.frame_index = 0
         self.inited_process_num = 0 
@@ -774,8 +784,4 @@ class QnnTaskPool():
         self.child_thread = None
 
         return ret
-
-
-
-
 
