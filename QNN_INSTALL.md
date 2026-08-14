@@ -22,7 +22,7 @@ pip install wheel setuptools pybind11 build
 ## 2. 下载并配置 QAIRT SDK
 
 网页下载: [Qualcomm Software Center](https://softwarecenter.qualcomm.com/catalog/item/Qualcomm_AI_Runtime_Community?osArch=Any&osType=All&version=2.39.0.250926)<br>
-链接下载: [Qualcomm_AI_Runtime_SDK_2.38.0.250901.zip](https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.39.0.250926/v2.39.0.250926.zip)
+链接下载: [Qualcomm_AI_Runtime_SDK_2.39.0.250926.zip](https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.39.0.250926/v2.39.0.250926.zip)
 
 > - 推理模型所使用的SDK版本建议**高于等于**转换时所用的SDK版本<br>
 > - 设备代号 (如 QCS6490 -> Hexagon v68) 可在QAIRT附赠的文档查找
