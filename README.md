@@ -29,7 +29,7 @@
 - **三后端统一接口** — RKNN（Rockchip NPU）/ QNN（Qualcomm HTP）/ ONNX Runtime（CPU），`put()` / `get()` / `release()` 三方法
 - **自动模型识别** — 根据文件后缀 (`.rknn` / `.bin` / `.onnx`) 自动选择推理后端，零配置
 - **多模式推理** — 单线程执行、线程池并发、进程池 + 共享内存，按需选择性能与开销的平衡
-- **多核 NPU 支持** — 指定 NPU 核心 (Core 0/1/2/ALL)，线程池/进程池自动轮询分发
+- **多核 NPU 支持** — 指定 NPU 核心 (Core 0/1/2/ALL) 或任务数，线程池/进程池自动轮询分发
 - **格式自动转换** — 支持 NHWC / NCHW 输入，后端自动处理维度转置
 - **延迟初始化** — 首次 `put()` 时才加载模型，减少启动开销
 - **易于集成** — 三行代码接入自有项目，比如作为 [Focus-Finder](https://github.com/YeWenxuan64/Focus-Finder) 的推理后端
@@ -119,15 +119,34 @@ import numpy as np
 # 初始化 — 根据模型文件后缀自动选择后端
 model = AIInferencer(
     model_path='model.rknn',      # .rknn / .bin / .onnx
-    cores=(0,),                    # NPU 核心，默认 (0,)
+    cores=(0,),                    # NPU 核心/任务数，默认 (0,)
     mult_task=False                # 是否启用线程池并发
 )
 
-# 推理 — 输入 NHWC 格式的 numpy 数组
-input_data = [np.random.randint(0, 255, (1, 320, 640, 3), dtype=np.uint8)]
-result = model.put(input_data, input_format='nhwc')
+# 推理 — 输入列表包装的 numpy 数组
+input_tensor_list:list[np.ndarray] = [input_tensor1, input_tensor2]
+result = model.put(input_tensor_list, input_format='nhwc')
 
 # 释放资源
+model.release()
+```
+
+```python
+from ai_inferencer import AIInferencer
+import numpy as np
+
+# 双核并发推理
+model = AIInferencer(
+    model_path='model.rknn',
+    cores=(0, 1),          # 使用 NPU Core 0 和 Core 1 (或指定两个并发任务)
+    mult_task=True          # 启用并发
+)
+
+for frame in video_stream:
+    input_data = [preprocess(frame)]
+    model.put(input_data)          # 提交推理任务（轮询分发到不同核心）
+    result = model.get(block=True) # 获取结果（阻塞等待）
+
 model.release()
 ```
 
@@ -140,25 +159,6 @@ model.release()
 | **进程池 ProcessPool** | QNN 极致性能，绕过 GIL | `AIInferencer(model_path, cores=(0, 1), mult_task=True)`（QNN 自动使用进程池） |
 
 ### 🧵 线程池 / 进程池用法
-
-```python
-from ai_inferencer import AIInferencer
-import numpy as np
-
-# 双核并发推理
-model = AIInferencer(
-    model_path='model.rknn',
-    cores=(0, 1),          # 使用 NPU Core 0 和 Core 1
-    mult_task=True          # 启用线程池
-)
-
-for frame in video_stream:
-    input_data = [preprocess(frame)]
-    model.put(input_data)          # 提交推理任务（轮询分发到不同核心）
-    result = model.get(block=True) # 获取结果（阻塞等待）
-
-model.release()
-```
 
 > **RKNN** 并发使用线程池 `ThreadPoolExecutor`，**QNN** 并发使用进程池 `multiprocessing.Process` + 共享内存拷贝
 
@@ -224,7 +224,7 @@ AIInferencer(model_path: str, cores: tuple[int] = (0,), mult_task: bool = False)
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `model_path` | `str` | — | 模型文件路径，根据后缀自动识别类型 |
-| `cores` | `tuple[int]` | `(0,)` | NPU 核心编号，支持 `0`/`1`/`2`/`-1`(ALL) |
+| `cores` | `tuple[int]` | `(0,)` | NPU 核心编号或任务数，支持 `0`/`1`/`2`/`-1`(ALL) |
 | `mult_task` | `bool` | `False` | 是否启用线程池/进程池并发模式 |
 
 **方法（函数）：**
@@ -242,68 +242,6 @@ AIInferencer(model_path: str, cores: tuple[int] = (0,), mult_task: bool = False)
 | `.rknn` | RKNN Lite | Rockchip NPU<br>(RK3588/RK3576/RK3566...) |
 | `.bin` | QAIRT | Qualcomm HTP<br>(QCS6490/QCS8550/QCS9075...) |
 | `.onnx` | ONNX Runtime | CPU (General) |
-
----
-
-### `RknnExecutor` / `RknnThreadPool`
-
-Rockchip NPU 推理后端。
-
-```python
-# 单线程
-from rknn_inferencer import RknnExecutor
-executor = RknnExecutor(model_path='model.rknn', cores=(0,))
-result = executor.put(input_data, input_format='nhwc')
-executor.release()
-
-# 线程池（多核并发）
-from rknn_inferencer import RknnThreadPool
-pool = RknnThreadPool(model_path='model.rknn', cores=(0, 1))
-pool.put(input_data)
-result = pool.get(block=True)
-pool.release()
-```
-
-
-### `QnnExecutor` / `QnnProcessPool`
-
-Qualcomm HTP 推理后端。
-
-```python
-# 单线程(进程)
-from qnn_inferencer import QnnExecutor
-executor = QnnExecutor(model_path='model.bin')
-result = executor.put(input_data, input_format='nhwc')
-executor.release()
-
-# 进程池（共享内存"一"拷贝，绕过 GIL）
-from qnn_inferencer import QnnProcessPool
-pool = QnnProcessPool(model_path='model.bin', cores=(0, 1))
-pool.put(input_data)
-result = pool.get(block=True)
-pool.release()
-```
-
-
-### `OnnxExecutor` / `OnnxThreadPool`
-
-ONNX Runtime CPU 推理后端 (用于在转换为 onnx 模型后进行测试用)。
-
-```python
-# 单线程
-from onnx_inferencer import OnnxExecutor
-executor = OnnxExecutor(model_path='model.onnx')
-executor.set_providers(['CPUExecutionProvider'])  # 可选：指定执行提供者
-result = executor.put(input_data, input_format='nhwc')
-executor.release()
-
-# 线程池
-from onnx_inferencer import OnnxThreadPool
-pool = OnnxThreadPool(model_path='model.onnx', task_num_or_cores=2)
-pool.put(input_data, input_format='nhwc')
-result = pool.get(block=True)
-pool.release()
-```
 
 ---
 
