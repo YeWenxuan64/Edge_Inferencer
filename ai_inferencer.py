@@ -38,7 +38,7 @@ class AIInferencer:
         """
         args:
             model_path: 模型文件路径 str: '/path/to/model'
-            会根据文件后缀名自动识别模型类型, 目前支持rknn, onnx, tflite
+            会根据文件后缀名自动识别模型类型, 目前支持rknn, qnn, onnx
 
             cores: 指定使用哪些核心进行推理 tuple: (0,) or any like (0, 1, 2)
             默认使用第一个核心. 若使用多个核心, 则开启多个线程
