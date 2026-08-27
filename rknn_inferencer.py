@@ -1,6 +1,8 @@
 import numpy as np
 from rknnlite.api import RKNNLite
 # from collections import deque
+import threading
+import os
 from concurrent.futures import ThreadPoolExecutor, Future
 
 class RknnExecutor():
@@ -74,6 +76,17 @@ class RknnThreadPool():
         
         self.frame_index = 0
 
+    @staticmethod
+    def set_cpu_affinity():
+        try:
+            pid = threading.get_native_id()
+            cores_list = [4,5,6,7]
+            if cores_list:
+                os.sched_setaffinity(pid, cores_list)
+                print(f"[RknnThreadPool] Set CPU affinity to {cores_list} for PID {pid}")
+        except Exception:
+            pass
+
     def init_rknn_lite_threadpool(self) -> tuple[ThreadPoolExecutor, list[RKNNLite]]:
         rknn_list = []
 
@@ -93,7 +106,7 @@ class RknnThreadPool():
             rknn_lite.init_runtime(core_mask=mask)
             rknn_list.append(rknn_lite)
 
-        thread_pool = ThreadPoolExecutor(max_workers=self.thread_num, thread_name_prefix='rknn_thread_pool')
+        thread_pool = ThreadPoolExecutor(max_workers=self.thread_num, thread_name_prefix='rknn_thread_pool', initializer=self.set_cpu_affinity)
 
         return thread_pool, rknn_list
 
