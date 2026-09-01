@@ -40,10 +40,10 @@
 |------|------|
 | [`ai_inferencer.py`](./ai_inferencer.py) | 统一入口 `AIInferencer`，自动识别模型类型并路由 |
 | [`rknn_inferencer.py`](./rknn_inferencer.py) | Rockchip NPU 推理：<br>`RknnExecutor`（单线程）<br>`RknnThreadPool`（线程池） |
-| [`qnn_inferencer.py`](./qnn_inferencer.py) | Qualcomm HTP 推理：<br>`QnnExecutor`（单线程）<br>`QnnProcessPool`（Python进程池+共享内存）<br>`TaskPool`（C++进程的Python池+C++共享内存）（实验性） |
+| [`qnn_inferencer.py`](./qnn_inferencer.py) | Qualcomm HTP 推理：<br>`QnnExecutor`（单线程）<br>`QnnThreadPool`（线程池）<br>`QnnProcessPool`（Python进程池+共享内存）<br>`TaskPool`（Python线程池维护的C++进程的+C++共享内存）（实验性） |
 | [`onnx_inferencer.py`](./onnx_inferencer.py) | ONNX Runtime 推理：<br>`OnnxExecutor`（单线程）<br>`OnnxThreadPool`（线程池） |
 
-> **底层 SDK：** Rockchip NPU 使用 **rknn-toolkit-lite2**；Qualcomm HTP 使用 **QAI AppBuilder**（基于 QAIRT SDK）；ONNX 使用 **onnxruntime**。
+> **底层 SDK：** Rockchip NPU 使用 [rknn-toolkit-lite2](https://github.com/airockchip/rknn-toolkit2)；Qualcomm HTP 使用 [QAI AppBuilder](https://github.com/qualcomm/qai-appbuilder)（基于 QAIRT SDK）；ONNX 使用 **onnxruntime**。
 
 
 
@@ -60,7 +60,8 @@
     │ (Rockchip) │ │ (Qualcomm) │ │ (CPU)    │
     ├────────────┤ ├────────────┤ ├──────────┤
     │ Executor   │ │ Executor   │ │ Executor │
-    │ ThreadPool │ │ ProcessPool│ │          │
+    │ ThreadPool │ │ ThreadPool │ │          │
+    │            │ │ ProcessPool│ │          │
     │            │ │ TaskPool   │ │          │
     └────────────┘ └────────────┘ └──────────┘
 ```
@@ -103,7 +104,7 @@ cd Edge_Inferencer
 | **ONNX Runtime** (x86 / 通用) | `pip install -r requirements_onnx.txt` |
 
 注：<br>
-> 1. ⚠️ 部分NPU接口的 Python 包会在内部写依赖需求，但有可能会胡乱要求某些依赖的最新版本，导致 **Python 环境污染**。若有需要，请手动安装依赖，并使用 `pip install -r requirements.txt --no-deps` 安装本项目依赖
+> 1. ⚠️ 部分NPU接口的 Python 包会在内部写依赖需求，但有可能会胡乱要求某些依赖的最新版本，导致 **Python 环境污染**(比如直接给你来个numpy最新版同时掀翻你的opencv)。若有需要，请手动安装依赖，并使用 `pip install -r requirements.txt --no-deps` 安装本项目依赖
 >
 > 2. QNN 的 `qai_appbuilder` 可以从源码编译安装，可参考 [QNN (qai_appbuilder) 编译安装](QNN_INSTALL.md)
 
