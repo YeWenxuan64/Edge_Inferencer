@@ -203,6 +203,105 @@ class QnnTaskExecutor():
 
 
 
+from concurrent.futures import ThreadPoolExecutor, Future
+
+class QnnThreadPool():
+    perf_cpu_cores = check_arm_perf_cores()
+
+    def __init__(self, model_path:str, cores:tuple[int]=(0, 1)):
+        self.model_path = model_path
+        self.cores = cores
+
+        self.thread_num = len(self.cores)
+        self.thread_pool = None
+        self.qnn_list:list[QNNContext]|None = None
+        self.queue_list:list[Future] = []
+        
+        self.frame_index = 0
+
+    def init_qnn(self) -> list[QNNContext]:
+        QNNConfig.Config(Runtime.HTP, LogLevel.ERROR, ProfilingLevel.OFF)
+
+        model_name = sanitize_name(Path(self.model_path).stem)
+        model_name += f"_{int(time.monotonic_ns())}"
+
+        qnn_list:list[QNNContext] = []
+
+        for core in self.cores:
+            qnn_context = QNNContext(model_name=f'{model_name}_{core}', model_path=self.model_path)
+            qnn_list.append(qnn_context)
+
+        PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)
+        return qnn_list
+
+    def thread_set_affinity(self) -> None:
+        set_cpu_affinity(self.perf_cpu_cores)
+
+    @staticmethod
+    def qnn_inference(qnn_context:QNNContext, input_list:list[np.ndarray]) -> list[np.ndarray]|None:
+        outputs:list = qnn_context.Inference(input_list)
+        return outputs
+
+    def queue_put(self, frame) -> None:
+        excutor_index = self.frame_index
+        self.queue_list.append(self.thread_pool.submit(self.qnn_inference, self.qnn_list[excutor_index], frame))
+
+        self.frame_index = (self.frame_index + 1) % self.thread_num
+
+    def put(self, input_data:list[np.ndarray], input_format:str='nhwc', block_all_gets:bool=False) -> None:
+        if input_format == 'nhwc':
+            pass
+        elif input_format == 'nchw':
+            input_data = [np.transpose(input_tensor, (0, 2, 3, 1)) for input_tensor in input_data] # NCHW -> NHWC
+
+        if self.thread_pool is None:
+            self.thread_pool = ThreadPoolExecutor(self.thread_num, thread_name_prefix='qnn_thread_pool', initializer=self.thread_set_affinity)
+            self.qnn_list = self.init_qnn()
+            
+            if block_all_gets is False:
+                for i, core in enumerate(self.cores):
+                    self.queue_put(input_data)
+                    print(f'QNN core: {core}, thread: {i}')
+            else:
+                self.queue_put(input_data)
+        else:
+            self.queue_put(input_data)
+
+    def get(self, block:bool=True) -> list[np.ndarray]|None:
+        future:Future = self.queue_list.pop(0)
+
+        if block is False and future.done() is False:
+            self.queue_list.insert(0, future)
+            return None
+
+        result_list:list = future.result()
+
+        return result_list
+
+    def release(self) -> bool:
+        ret = False
+
+        if self.thread_pool is not None:
+            self.thread_pool.shutdown(wait=True, cancel_futures=True)
+
+            for i in range(len(self.queue_list)):
+                future = self.queue_list.pop(0)
+                future.cancel()
+
+            for i in range(len(self.qnn_list)):
+                qnn_context = self.qnn_list.pop(0)
+                qnn_context.release()
+                print(f'QNN Thread: {i} released')
+
+            # PerfProfile.RelPerfProfileGlobal()
+            self.thread_pool = None
+            ret = True
+
+        return ret
+
+
+
+
 
 def unlink_shm_at_exit(shm_name:str):
     try:
