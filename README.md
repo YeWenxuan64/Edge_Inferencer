@@ -107,6 +107,8 @@ cd Edge_Inferencer
 > 1. ⚠️ 部分NPU接口的 Python 包会在内部写依赖需求，但有可能会胡乱要求某些依赖的最新版本，导致 **Python 环境污染**(比如直接给你来个numpy最新版同时掀翻你的opencv)。若有需要，请手动安装依赖，并使用 `pip install -r requirements.txt --no-deps` 安装本项目依赖
 >
 > 2. QNN 的 `qai_appbuilder` 可以从源码编译安装，可参考 [QNN (qai_appbuilder) 编译安装](QNN_INSTALL.md)
+>
+> 3. QNN(HTP) 推理的线程池(ThreadPool)需要**最新版**的 `qai_appbuilder` 才能支持，需要源码安装 qai_appbuilder
 
 
 ## 🏃 快速开始
@@ -119,7 +121,7 @@ import numpy as np
 
 # 初始化 — 根据模型文件后缀自动选择后端
 model = AIInferencer(
-    model_path='model.rknn',      # .rknn / .bin / .onnx
+    model_path='model.rknn',       # .rknn / .bin / .onnx
     cores=(0,),                    # NPU 核心/任务数，默认 (0,)
     mult_task=False                # 是否启用线程池并发
 )
@@ -138,9 +140,9 @@ import numpy as np
 
 # 双核并发推理
 model = AIInferencer(
-    model_path='model.rknn',
-    cores=(0, 1),          # 使用 NPU Core 0 和 Core 1 (或指定两个并发任务)
-    mult_task=True          # 启用并发
+    model_path='model.rknn', # .rknn / .bin / .onnx
+    cores=(0, 1),            # 使用 NPU Core 0 和 Core 1 (或指定两个并发任务)
+    mult_task=True           # 启用并发
 )
 
 for frame in video_stream:
@@ -161,7 +163,7 @@ model.release()
 
 ### 🧵 线程池 / 进程池用法
 
-> **RKNN** 并发使用线程池 `ThreadPoolExecutor`，**QNN** 并发使用进程池 `multiprocessing.Process` + 共享内存拷贝
+> **RKNN** 并发使用线程池 `ThreadPoolExecutor`，**QNN** 并发使用线程池 `ThreadPoolExecutor` ~~进程池 `multiprocessing.Process` + 共享内存拷贝~~
 
 ---
 
@@ -349,6 +351,7 @@ model.release()
 - **`get(block=False)` 非阻塞** — 结果未就绪时返回 `None`，不会卡死主线程
 - **QNN 进程池使用共享内存** — 自动管理创建与清理，正常退出时自动释放
 - **NCHW 输入** — 后端会自动转置为 NHWC（RKNN/QNN）或保持 NCHW（ONNX）
+- **QNN(HTP)并发性能** — 需要**最新版**的 `qai_appbuilder` 才能支持，需要源码安装 qai_appbuilder
 
 
 ## 📚 Reference
