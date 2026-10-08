@@ -3,24 +3,33 @@
 
 ## ⚡ 性能测试
 
-⚠️ 性能测试数据数据为**参考值**，实际性能取决于具体硬件型号、驱动版本、量化精度及输入分辨率。<br>
+⚠️ 性能测试数据为**参考值**，实际性能取决于硬件型号、驱动版本、量化精度及输入分辨率。<br>
 
-> - 测试前均设置 CPU 频率为用户**最高**可设置频率
-> - 测试前均绑定本程序所有的进程/线程（含子进程/线程）的 CPU 亲和度为**性能核心**
-> - 推理时间为模型**在 NPU 的**推理时间
-> - 后处理时间为将推理结果处理为**可用数据**（如 bbox、class、score 等）的时间
-> - 推理时间和后处理时间**不包括**预处理时间，如缩放图像、bgr 转 rgb、nwc 转 nhwc、归一化等，**也不包括**拷贝数据时间
-> - 并发推理时间**包含**推理时间、后处理时间以及拷贝数据时间，但**不包括**预处理时间
-> - 高通平台推理相关数据**存疑**，部分原因可参考下文
+### 📋 测试条件
+
+> - 测试前将 CPU 频率设为**最高**可设置频率
+> - 测试前将本程序所有进程/线程（含子进程/线程）的 CPU 亲和度绑定到**性能核心**
+
+### 📐 指标定义
+
+| 指标 | 含义 | 含预处理 | 含拷贝 |
+|------|------|:---:|:---:|
+| **推理时间** | 模型在 NPU 上的推理耗时 | 否 | 否 |
+| **后处理时间** | 将推理结果处理为可用数据（bbox/class/score 等）的耗时 | 否 | 否 |
+| **并发推理时间** | 推理 + 后处理 + 拷贝数据 | 否 | 是 |
+
+> 预处理指缩放、BGR→RGB、NWC→NHWC、归一化等。
+>
+> ⚠️ 高通平台推理相关数据**存疑**，部分原因可参考下文。
 
 
 ### 💡 **如何获取实际数据：** 
 > 1. ai_inferencer 模块提供了 `timeit` 装饰器，可用于测量任意函数的耗时
-> 2. 使用 `VizTracer` 工具 Tracer 要运行的文件，之后浏览统计并统计结果
+> 2. 使用 `VizTracer` 追踪目标脚本，再用 `VizViewer` 查看统计结果
 
 ### 测试项目：
 #### 1. NPU 推理时间<br>
-测试目标：NPU 的 Python API 中，**作为 `推理` 函数**的运行时间。<br>
+测试目标：NPU Python API 中**推理函数**本身的运行时间。<br>
 
 测试方法：使用 `VizTracer` 工具Tracer**推理脚本**。同时推理脚本内使用 NPU 的 Python API 中的 **`单任务` 推理模式**。<br>
 
@@ -55,13 +64,14 @@ QNN 并发推理面临一系列由 `QNNContext`、`QNNContextProc` 内部复杂�
 
 **根本原因：** 部分 soc (如QCS6490) 的 HTP（DSP）通常不具备多个独立逻辑核心，其"并发"本质上是通过提高运算器（如矩阵乘法累加器）利用率与内存带宽利用率来实现的，而非真正的多核并行。
 
-**Python 端的限制：**
+**Python 端的限制（历史背景，现已缓解）：**
 - ~~`QNNContext` 内部状态复杂，**不支持多线程并发访问**，必须加锁保护~~
 - ~~由于 Python GIL 与 QNN 锁的叠加，线程池在 QNN 场景下负收益~~ 
 - ~~因此可退而求其次，在 **Python 端使用多进程（`multiprocessing`）** 来手动并发（仍推荐用于极致性能场景）~~
 - qai appBuilder 用于多进程并发推理的`QNNContextProc`的并发速度比本小姐写的`QnnProcessPool` **Python multiprocessing based 多进程QNN推理器** 快不了几个ms（不过内存占用少了些）
 
-已缓解：[perf: release GIL during blocking QNN inference and IPC calls in pybind layer](https://github.com/qualcomm/qai-appbuilder/pull/244) 合入后，阻塞式推理与 IPC 调用期间可释放 GIL，线程池并发不再受 GIL 阻塞。同时本项目也更新(恢复)了 `QnnThreadPool` 的使用。
+**已缓解（当前推荐）：** [perf: release GIL during blocking QNN inference and IPC calls in pybind layer](https://github.com/qualcomm/qai-appbuilder/pull/244) 合入后，阻塞式推理与 IPC 调用期间可释放 GIL，线程池并发不再受 GIL 阻塞。因此**当前推荐使用 `QnnThreadPool`（线程池）**，需安装**最新版** `qai_appbuilder`（可直接 `pip install`）。<br>
+> ⚠️ 注意：**使用最新版 `qai_appbuilder` 时无法使用进程池**（`QnnProcessPool` 为历史方案，仅旧版 `qai_appbuilder` 可用）。
 
 **隐藏的稳定性风险：**
 

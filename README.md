@@ -28,7 +28,7 @@
 
 - **三后端统一接口** — RKNN（Rockchip NPU）/ QNN（Qualcomm HTP）/ ONNX Runtime（CPU），`put()` / `get()` / `release()` 三方法
 - **自动模型识别** — 根据文件后缀 (`.rknn` / `.bin` / `.onnx`) 自动选择推理后端，零配置
-- **多模式推理** — 单线程执行、线程池并发、进程池 + 共享内存，按需选择性能与开销的平衡
+- **多模式推理** — 单线程执行、线程池并发（推荐）、进程池 + 共享内存（历史），按需选择性能与开销的平衡
 - **多核 NPU 支持** — 指定 NPU 核心 (Core 0/1/2/ALL) 或任务数，线程池/进程池自动轮询分发
 - **格式自动转换** — 支持 NHWC / NCHW 输入，后端自动处理维度转置
 - **延迟初始化** — 首次 `put()` 时才加载模型，减少启动开销
@@ -40,7 +40,7 @@
 |------|------|
 | [`ai_inferencer.py`](./ai_inferencer.py) | 统一入口 `AIInferencer`，自动识别模型类型并路由 |
 | [`rknn_inferencer.py`](./rknn_inferencer.py) | Rockchip NPU 推理：<br>`RknnExecutor`（单线程）<br>`RknnThreadPool`（线程池） |
-| [`qnn_inferencer.py`](./qnn_inferencer.py) | Qualcomm HTP 推理：<br>`QnnExecutor`（单线程）<br>`QnnThreadPool`（线程池）<br>`QnnProcessPool`（Python进程池+共享内存）<br>`TaskPool`（Python线程池维护的C++进程的+C++共享内存）（实验性） |
+| [`qnn_inferencer.py`](./qnn_inferencer.py) | Qualcomm HTP 推理：<br>`QnnExecutor`（单线程）<br>`QnnThreadPool`（线程池，推荐）<br>`QnnProcessPool`（Python进程池+共享内存，历史）<br>`QnnTaskPool`（Python线程池维护的C++进程的+C++共享内存，实验性） |
 | [`onnx_inferencer.py`](./onnx_inferencer.py) | ONNX Runtime 推理：<br>`OnnxExecutor`（单线程）<br>`OnnxThreadPool`（线程池） |
 
 > **底层 SDK：** Rockchip NPU 使用 [rknn-toolkit-lite2](https://github.com/airockchip/rknn-toolkit2)；Qualcomm HTP 使用 [QAI AppBuilder](https://github.com/qualcomm/qai-appbuilder)（基于 QAIRT SDK）；ONNX 使用 **onnxruntime**。
@@ -106,9 +106,9 @@ cd Edge_Inferencer
 注：<br>
 > 1. ⚠️ 部分NPU接口的 Python 包会在内部写依赖需求，但有可能会胡乱要求某些依赖的最新版本，导致 **Python 环境污染**(比如直接给你来个numpy最新版同时掀翻你的opencv)。若有需要，请手动安装依赖，并使用 `pip install -r requirements.txt --no-deps` 安装本项目依赖
 >
-> 2. QNN 的 `qai_appbuilder` 可以从源码编译安装，可参考 [QNN (qai_appbuilder) 编译安装](QNN_INSTALL.md)
+> 2. QNN 的 `qai_appbuilder` 最新版可直接 `pip install` 安装，也可从源码编译安装，可参考 [QNN (qai_appbuilder) 安装](QNN_INSTALL.md)
 >
-> 3. QNN(HTP) 推理的线程池(ThreadPool)需要**最新版**的 `qai_appbuilder` 才能支持，需要源码安装 qai_appbuilder
+> 3. QNN(HTP) 推理的线程池(ThreadPool)需要**最新版**的 `qai_appbuilder` 才能支持（上游已支持推理时释放 GIL，线程池并发不再受 GIL 阻塞）。最新版可直接 `pip install` 安装；注意**使用最新版 `qai_appbuilder` 时无法使用进程池**（`QnnProcessPool` 为历史方案）
 
 
 ## 🏃 快速开始
@@ -158,12 +158,13 @@ model.release()
 | 模式 | 适用场景 | 创建方式 |
 |------|----------|----------|
 | **单线程 Executor** | 简单推理，最低开销 | `AIInferencer(model_path, mult_task=False)` |
-| **线程池 ThreadPool** | 多核 NPU 并发推理 | `AIInferencer(model_path, cores=(0, 1), mult_task=True)`（RKNN/QNN） |
-| **进程池 ProcessPool** | QNN 极致性能，绕过 GIL | `AIInferencer(model_path, cores=(0, 1), mult_task=True)`（QNN 自动使用进程池） |
+| **线程池 ThreadPool** | 多核 NPU 并发推理（推荐） | `AIInferencer(model_path, cores=(0, 1), mult_task=True)`（RKNN/QNN） |
+| **进程池 ProcessPool** | QNN 历史方案，绕过 GIL（需旧版 `qai_appbuilder`） | 手动切换至 `QnnProcessPool`（`AIInferencer` 默认不走） |
 
 ### 🧵 线程池 / 进程池用法
 
-> **RKNN** 并发使用线程池 `ThreadPoolExecutor`，**QNN** 并发使用线程池 `ThreadPoolExecutor` ~~进程池 `multiprocessing.Process` + 共享内存拷贝~~
+> **RKNN** 与 **QNN** 并发均**推荐**使用线程池 `ThreadPoolExecutor`（QNN 需最新版 `qai_appbuilder`，上游已支持推理时释放 GIL）。<br>
+> QNN 亦提供进程池 `QnnProcessPool`（`multiprocessing.Process` + 共享内存拷贝）作为**历史**备选，但**使用最新版 `qai_appbuilder` 时无法使用进程池**。
 
 ---
 
@@ -179,7 +180,7 @@ model.release()
 
 #### 🔄 帧错位说明：
 
-`RknnThreadPool` 和 `QNNProcessPool` 的 `put()` / `get()` 存在**固定的帧偏移**，偏移量等于任务数 (`thread_num`)。
+`RknnThreadPool` 和 `QnnThreadPool`（及历史备选 `QnnProcessPool`）的 `put()` / `get()` 存在**固定的帧偏移**，偏移量等于任务数 (`thread_num`)。
 
 **原因：** 首次调用 `put()` 初始化线程池时，会用同一帧向每个核心提交一个推理任务（填满 `thread_num` 个队列槽位），后续每次 `put()` 只追加一个任务。因此 `get()` 返回的结果始终滞后于当前 `put()` 的帧。
 
@@ -349,9 +350,9 @@ model.release()
 - **首次调用 `put()` 才会加载模型** — 延迟初始化减少启动时间
 - **并发模式下的 `put()` 返回 `None`** — 需要通过 `get()` 获取结果
 - **`get(block=False)` 非阻塞** — 结果未就绪时返回 `None`，不会卡死主线程
-- **QNN 进程池使用共享内存** — 自动管理创建与清理，正常退出时自动释放
+- **QNN 进程池（历史）使用共享内存** — 自动管理创建与清理，正常退出时自动释放
 - **NCHW 输入** — 后端会自动转置为 NHWC（RKNN/QNN）或保持 NCHW（ONNX）
-- **QNN(HTP)并发性能** — 需要**最新版**的 `qai_appbuilder` 才能支持，需要源码安装 qai_appbuilder
+- **QNN(HTP)并发性能** — 线程池并发需要**最新版**的 `qai_appbuilder`（上游已支持推理时释放 GIL），可直接 `pip install` 安装；**使用最新版时无法使用进程池**（`QnnProcessPool` 为历史方案）
 
 
 ## 📚 Reference

@@ -1,6 +1,14 @@
-# 🔨 qai appbuilder 编译安装
+# 🔨 qai appbuilder 安装
 
-QNN 后端依赖 `qai_appbuilder` Python 包，需从 [quic/ai-engine-direct-helper](https://github.com/quic/ai-engine-direct-helper) 源码编译为 `.whl` 后安装。
+QNN 后端依赖 `qai_appbuilder` Python 包。
+
+> 💡 **推荐：** 最新版 `qai_appbuilder` 已支持推理时释放 GIL（线程池并发可用），可直接 `pip install` 安装：
+> ```bash
+> pip install -U qai_appbuilder
+> ```
+> ⚠️ 注意：**使用最新版 `qai_appbuilder` 时无法使用进程池**（`QnnProcessPool` 为历史方案）。
+
+若需特定版本或最新版不满足需求，可参考下文从 [quic/ai-engine-direct-helper](https://github.com/quic/ai-engine-direct-helper) 源码编译为 `.whl` 后安装。
 
 ## ✅ 前置条件
 
